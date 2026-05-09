@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "saboter"
+version = "0.1.0"
+description = "A hidden-information Saboteur simulator for RL experiments."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+saboter-eval = "saboter.evaluation:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+neural = ["torch>=2.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
