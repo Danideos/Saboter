@@ -49,6 +49,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--mode", choices=("miners_only", "vs_random"), default="miners_only")
     parser.add_argument("--neural-count", type=int, default=1)
+    parser.add_argument(
+        "--miners-only-actions",
+        choices=("path_discard_map", "all"),
+        default="path_discard_map",
+    )
     parser.add_argument("--sampling", action="store_true")
     args = parser.parse_args(argv)
 
@@ -72,6 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=seed,
             max_steps=args.max_steps,
             neural_count=args.neural_count,
+            miners_only_actions=args.miners_only_actions,
         )
         path = args.html_dir / f"{args.mode}_seed{seed}_game{game_index + 1}.html"
         save_html_replay(path, result)
@@ -92,6 +98,7 @@ def play_neural_eval_game(
     seed: int,
     max_steps: int,
     neural_count: int = 1,
+    miners_only_actions: str = "path_discard_map",
 ) -> GameResult:
     env = SaboteurEnv(num_players=num_players)
     if mode == "miners_only":
@@ -124,7 +131,11 @@ def play_neural_eval_game(
         legal_actions = env.legal_actions(player_id)
         observation = env.observe(player_id)
         if mode == "miners_only":
-            legal_actions = filter_actions_for_training_mode(legal_actions, "miners_only")
+            legal_actions = filter_actions_for_training_mode(
+                legal_actions,
+                "miners_only",
+                miners_only_actions,
+            )
 
         if not legal_actions:
             action = None

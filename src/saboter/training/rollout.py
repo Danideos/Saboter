@@ -60,6 +60,7 @@ def collect_game_rollout(
     max_steps: int = 500,
     reward_mode: str = "terminal",
     training_mode: str = "normal",
+    miners_only_actions: str = "path_discard_map",
 ) -> RolloutGame:
     if training_mode == "miners_only":
         from saboter.cards import Role
@@ -76,7 +77,11 @@ def collect_game_rollout(
             raise RuntimeError(f"Rollout seed {seed} exceeded max_steps={max_steps}")
         player_id = env.agent_selection
         legal_actions = env.legal_actions(player_id)
-        legal_actions = filter_actions_for_training_mode(legal_actions, training_mode)
+        legal_actions = filter_actions_for_training_mode(
+            legal_actions,
+            training_mode,
+            miners_only_actions,
+        )
         if not legal_actions:
             env.step_known_legal(None)
             steps += 1
@@ -186,12 +191,20 @@ def collect_rollouts(
     max_steps: int = 500,
     reward_mode: str = "terminal",
     training_mode: str = "normal",
+    miners_only_actions: str = "path_discard_map",
 ) -> list[RolloutGame]:
     if games <= 0:
         raise ValueError("games must be positive")
     return [
         collect_game_rollout(
-            env, agent, seed=seed + game_index, storage_device=storage_device, max_steps=max_steps, reward_mode=reward_mode, training_mode=training_mode
+            env,
+            agent,
+            seed=seed + game_index,
+            storage_device=storage_device,
+            max_steps=max_steps,
+            reward_mode=reward_mode,
+            training_mode=training_mode,
+            miners_only_actions=miners_only_actions,
         )
         for game_index in range(games)
     ]

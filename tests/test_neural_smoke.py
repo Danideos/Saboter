@@ -11,11 +11,14 @@ from scripts.train_ppo import (
     main as train_ppo_main,
 )
 from saboter.action_encoding import ACTION_FEATURE_NAMES, encode_actions
+from saboter.actions import Discard, MapGoal, PlayPath, Rockfall, SabotageTool
 from saboter.agents.neural_agent import NeuralAgent
 from saboter.agents.random_agent import LegalRandomAgent
+from saboter.cards import Tool
 from saboter.env import SaboteurEnv
 from saboter.models.policy import SaboteurPolicy
 from saboter.observation import encode_observation
+from saboter.training.curriculum import filter_actions_for_training_mode
 from saboter.training.rollout import collect_game_rollout
 from saboter.training.returns import discounted_returns
 from saboter.training.tensorize import tensorize_actions, tensorize_observation
@@ -255,6 +258,23 @@ def test_miners_only_rollout_filters_non_path_curriculum_actions():
         transition.action_type
         for transition in game.transitions
     } <= {"discard", "play_path", "map_goal"}
+
+
+def test_miners_only_action_filter_can_allow_all_actions():
+    actions = [
+        PlayPath(0, 1, 0, 0),
+        Discard(1),
+        MapGoal(2, 0),
+        SabotageTool(3, 1, Tool.PICKAXE),
+        Rockfall(4, 1, 0),
+    ]
+
+    assert filter_actions_for_training_mode(actions, "miners_only", "all") == actions
+    assert filter_actions_for_training_mode(
+        actions,
+        "miners_only",
+        "path_discard_map",
+    ) == actions[:3]
 
 
 def test_neural_smoke_script_main_runs_modest_game_count(capsys):

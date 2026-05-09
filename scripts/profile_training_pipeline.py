@@ -114,6 +114,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         worker_torch_threads=args.worker_torch_threads,
         seed=args.seed + 300_000,
         max_steps=args.max_steps,
+        reward_mode="terminal",
+        training_mode="normal",
+        miners_only_actions="path_discard_map",
     )
     transitions = _flatten_transitions(baseline_games)
     action_rows = sum(int(transition.actions.shape[0]) for transition in transitions)
@@ -310,6 +313,9 @@ def profile_worker_rollout(
         worker_torch_threads=worker_torch_threads,
         seed=seed,
         max_steps=max_steps,
+        reward_mode="terminal",
+        training_mode="normal",
+        miners_only_actions="path_discard_map",
     )
     seconds = time.perf_counter() - start
     transitions = _flatten_transitions(rollouts)

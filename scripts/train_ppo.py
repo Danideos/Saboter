@@ -76,6 +76,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--goal-belief-coef", type=float, default=0.05)
     parser.add_argument("--reward-mode", choices=("terminal", "progress"), default="terminal")
     parser.add_argument("--training-mode", choices=("normal", "miners_only", "random_saboteurs"), default="normal")
+    parser.add_argument(
+        "--miners-only-actions",
+        choices=("path_discard_map", "all"),
+        default="path_discard_map",
+        help="Legal-action curriculum used only with --training-mode miners_only.",
+    )
     args = parser.parse_args(argv)
 
     if args.training_mode == "miners_only":
@@ -140,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_steps=args.max_steps,
                 reward_mode=args.reward_mode,
                 training_mode=args.training_mode,
+                miners_only_actions=args.miners_only_actions,
             )
             transitions = _flatten_transitions(games)
             ppo_metrics = ppo_update(model, optimizer, transitions, ppo_config, device=device)
@@ -156,6 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_steps=args.max_steps,
                 reward_mode=args.reward_mode,
                 training_mode=args.training_mode,
+                miners_only_actions=args.miners_only_actions,
             )
             transitions = _flatten_graph_transitions(games)
             ppo_metrics = graph_ppo_update(model, optimizer, transitions, graph_ppo_config, device=device)
@@ -187,6 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         device=device,
                         max_steps=args.max_steps,
                         model_type=args.model,
+                        miners_only_actions=args.miners_only_actions,
                     )
                 )
 
@@ -286,6 +295,7 @@ def evaluate_miners_only(
     device: str | torch.device,
     max_steps: int,
     model_type: str = "flat",
+    miners_only_actions: str = "path_discard_map",
 ) -> dict[str, float]:
     if games <= 0:
         return {}
@@ -322,6 +332,7 @@ def evaluate_miners_only(
             legal_actions = filter_actions_for_training_mode(
                 env.legal_actions(player_id),
                 "miners_only",
+                miners_only_actions,
             )
             if legal_actions:
                 action, _info = agent.act_with_info(
@@ -366,6 +377,7 @@ def _collect_iteration_rollouts(
     max_steps: int,
     reward_mode: str,
     training_mode: str,
+    miners_only_actions: str,
 ) -> list[RolloutGame]:
     if num_workers <= 1:
         return collect_rollouts(
@@ -377,6 +389,7 @@ def _collect_iteration_rollouts(
             max_steps=max_steps,
             reward_mode=reward_mode,
             training_mode=training_mode,
+            miners_only_actions=miners_only_actions,
         )
 
     worker_counts = _split_games(total_games, num_workers)
@@ -402,6 +415,7 @@ def _collect_iteration_rollouts(
                 worker_torch_threads,
                 reward_mode,
                 training_mode,
+                miners_only_actions,
             )
             for worker_id, game_count in enumerate(worker_counts)
             if game_count > 0
@@ -424,6 +438,7 @@ def _collect_iteration_graph_rollouts(
     max_steps: int,
     reward_mode: str,
     training_mode: str,
+    miners_only_actions: str,
 ) -> list[GraphRolloutGame]:
     if num_workers <= 1:
         return collect_graph_rollouts(
@@ -434,6 +449,7 @@ def _collect_iteration_graph_rollouts(
             max_steps=max_steps,
             reward_mode=reward_mode,
             training_mode=training_mode,
+            miners_only_actions=miners_only_actions,
         )
 
     worker_counts = _split_games(total_games, num_workers)
@@ -457,6 +473,7 @@ def _collect_iteration_graph_rollouts(
                 worker_torch_threads,
                 reward_mode,
                 training_mode,
+                miners_only_actions,
             )
             for worker_id, game_count in enumerate(worker_counts)
             if game_count > 0
@@ -477,6 +494,7 @@ def _collect_graph_worker(
     torch_threads: int,
     reward_mode: str,
     training_mode: str,
+    miners_only_actions: str,
 ) -> list[GraphRolloutGame]:
     torch.set_num_threads(torch_threads)
     if hasattr(torch, "set_num_interop_threads"):
@@ -500,6 +518,7 @@ def _collect_graph_worker(
         max_steps=max_steps,
         reward_mode=reward_mode,
         training_mode=training_mode,
+        miners_only_actions=miners_only_actions,
     )
 
 
@@ -515,6 +534,7 @@ def _collect_worker(
     torch_threads: int,
     reward_mode: str,
     training_mode: str,
+    miners_only_actions: str,
 ) -> list[RolloutGame]:
     torch.set_num_threads(torch_threads)
     if hasattr(torch, "set_num_interop_threads"):
@@ -533,6 +553,7 @@ def _collect_worker(
         max_steps=max_steps,
         reward_mode=reward_mode,
         training_mode=training_mode,
+        miners_only_actions=miners_only_actions,
     )
 
 
