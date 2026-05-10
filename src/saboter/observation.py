@@ -75,6 +75,11 @@ BOARD_CHANNEL_NAMES = (
     "known_stone",
     "private_known_gold",
     "private_known_stone",
+    "private_known_card_goal_gold",
+    "private_known_card_goal_stone_ne",
+    "private_known_card_goal_stone_nw",
+    *(f"private_known_has_{direction}" for direction in DIRECTIONS),
+    *(f"private_known_connects_{pair[0]}_{pair[1]}" for pair in CONNECTION_PAIRS),
     "has_N",
     "has_E",
     "has_S",
@@ -260,6 +265,7 @@ def encode_board_tensor(
                 )
 
     private_goal_knowledge = _known_goals(observation)
+    private_goal_cards = _known_goal_cards(observation)
     board_tiles = observation.get("board", [])
     if isinstance(board_tiles, list):
         for tile in board_tiles:
@@ -286,22 +292,36 @@ def encode_board_tensor(
                     _set_channel(tensor, "known_gold", row, col, 1.0)
                 elif goal_kind == GoalKind.STONE.value:
                     _set_channel(tensor, "known_stone", row, col, 1.0)
-                if isinstance(goal_index, int):
+                if isinstance(goal_index, int) and not revealed:
                     private_kind = private_goal_knowledge.get(goal_index)
+                    private_card = private_goal_cards.get(goal_index)
                     if private_kind == GoalKind.GOLD.value:
                         _set_channel(tensor, "private_known_gold", row, col, 1.0)
                     elif private_kind == GoalKind.STONE.value:
                         _set_channel(tensor, "private_known_stone", row, col, 1.0)
+                    _set_private_goal_card_channels(tensor, row, col, private_card)
 
             if tile.get("reachable"):
                 _set_channel(tensor, "reachable_from_start", row, col, 1.0)
             card = tile.get("card")
             rotation = _rotation_or_zero(tile.get("rotation", 0))
-            edges = _rotated_edges_from_card(card, rotation)
-            for direction in edges:
-                _set_channel(tensor, f"has_{direction}", row, col, 1.0)
-            for pair in _connection_pairs_from_card(card, rotation):
-                _set_channel(tensor, f"connects_{pair[0]}_{pair[1]}", row, col, 1.0)
+            if (
+                kind == "goal"
+                and not bool(tile.get("revealed"))
+                and isinstance(tile.get("goal_index"), int)
+            ):
+                private_card = private_goal_cards.get(int(tile["goal_index"]))
+                for direction in _privately_known_goal_edges(private_card):
+                    _set_channel(tensor, f"private_known_has_{direction}", row, col, 1.0)
+                for pair in _privately_known_goal_connection_pairs(private_card):
+                    _set_channel(tensor, f"private_known_connects_{pair[0]}_{pair[1]}", row, col, 1.0)
+            else:
+                edges = _rotated_edges_from_card(card, rotation)
+                connection_pairs = _connection_pairs_from_card(card, rotation)
+                for direction in edges:
+                    _set_channel(tensor, f"has_{direction}", row, col, 1.0)
+                for pair in connection_pairs:
+                    _set_channel(tensor, f"connects_{pair[0]}_{pair[1]}", row, col, 1.0)
 
     open_edges, frontier_distances, tile_distances = _board_structure_features(observation)
     for coord, directions in open_edges.items():
@@ -515,7 +535,7 @@ def _encode_event(
     card = event.get("card")
     if isinstance(card, dict):
         card_type = card.get("type")
-        if isinstance(card_type, str):
+        if isinstance(card_type, str) and card_type in CARD_TYPE_NAMES:
             _set_feature(row, HISTORY_F, f"card_type_{card_type}", 1.0)
     actor = event.get("actor")
     if isinstance(actor, int):
@@ -559,7 +579,7 @@ def _encode_card(card: dict[str, object]) -> list[float]:
     row = [0.0 for _ in HAND_FEATURE_NAMES]
     _set_feature(row, HAND_F, "present", 1.0)
     card_type = card.get("type")
-    if isinstance(card_type, str):
+    if isinstance(card_type, str) and card_type in CARD_TYPE_NAMES:
         _set_feature(row, HAND_F, f"card_type_{card_type}", 1.0)
     tools = card.get("tools", [])
     if isinstance(tools, list):
@@ -705,6 +725,50 @@ def _known_goals(observation: dict[str, object]) -> dict[int, str]:
         if raw_kind in {GoalKind.GOLD.value, GoalKind.STONE.value}:
             result[index] = str(raw_kind)
     return result
+
+
+def _known_goal_cards(observation: dict[str, object]) -> dict[int, dict[str, object]]:
+    known = observation.get("known_goal_cards", {})
+    if not isinstance(known, dict):
+        return {}
+    result: dict[int, dict[str, object]] = {}
+    for raw_index, raw_card in known.items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(raw_card, dict):
+            result[index] = raw_card
+    return result
+
+
+def _set_private_goal_card_channels(
+    tensor: list[list[list[float]]],
+    row: int,
+    col: int,
+    card: dict[str, object] | None,
+) -> None:
+    card_id = card.get("id") if isinstance(card, dict) else None
+    if card_id == "goal_gold":
+        _set_channel(tensor, "private_known_card_goal_gold", row, col, 1.0)
+    elif card_id == "goal_stone_ne":
+        _set_channel(tensor, "private_known_card_goal_stone_ne", row, col, 1.0)
+    elif card_id == "goal_stone_nw":
+        _set_channel(tensor, "private_known_card_goal_stone_nw", row, col, 1.0)
+
+
+def _privately_known_goal_edges(card: dict[str, object] | None) -> set[str]:
+    edges: set[str] = set()
+    for rotation in (0, 180):
+        edges.update(_rotated_edges_from_card(card, rotation))
+    return edges
+
+
+def _privately_known_goal_connection_pairs(card: dict[str, object] | None) -> set[str]:
+    pairs: set[str] = set()
+    for rotation in (0, 180):
+        pairs.update(_connection_pairs_from_card(card, rotation))
+    return pairs
 
 
 def _board_goal_knowledge(observation: dict[str, object]) -> dict[int, str]:

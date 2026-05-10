@@ -128,7 +128,7 @@ def encode_action_vector(observation: dict[str, object], action: Action) -> list
     card = _card_for_action(observation, action)
     if card is not None:
         card_type = card.get("type")
-        if isinstance(card_type, str):
+        if isinstance(card_type, str) and card_type in CARD_TYPE_NAMES:
             _set_feature(vector, f"card_type_{card_type}", 1.0)
         tools = card.get("tools", [])
         if isinstance(tools, list):

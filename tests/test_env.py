@@ -113,6 +113,7 @@ def test_step_known_legal_does_not_regenerate_legal_actions(monkeypatch):
 def test_map_goal_updates_only_acting_players_private_knowledge():
     env = SaboteurEnv(num_players=3)
     env.reset(seed=13)
+    env.board = Board([GOAL_STONE_NW_CARD, GOAL_GOLD_CARD, GOAL_STONE_NE_CARD])
     set_current_hand(env, action_card(CardType.MAP))
     env.deck = [path_card_by_id("path_ew")]
 
@@ -121,7 +122,10 @@ def test_map_goal_updates_only_acting_players_private_knowledge():
     obs_actor = env.observe(0)
     obs_other = env.observe(1)
     assert obs_actor["known_goals"]
+    assert obs_actor["known_goal_cards"][0]["id"] == "goal_stone_nw"
+    assert obs_actor["known_goal_cards"][0]["edges"] == ["N", "W"]
     assert obs_other["known_goals"] == {}
+    assert obs_other["known_goal_cards"] == {}
     assert all(
         tile["goal_kind"] is None
         for tile in obs_actor["board"]

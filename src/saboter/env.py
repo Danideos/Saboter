@@ -42,6 +42,7 @@ class PlayerState:
     hand: list[Card]
     broken_tools: set[Tool]
     known_goals: dict[int, GoalKind]
+    known_goal_cards: dict[int, Card]
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ class SaboteurEnv:
                     hand=hand,
                     broken_tools=set(),
                     known_goals={},
+                    known_goal_cards={},
                 )
             )
 
@@ -151,6 +153,10 @@ class SaboteurEnv:
             "board": self._board().public_tiles(),
             "known_goals": {
                 goal_index: goal_kind.value for goal_index, goal_kind in sorted(player.known_goals.items())
+            },
+            "known_goal_cards": {
+                goal_index: card.public_dict()
+                for goal_index, card in sorted(player.known_goal_cards.items())
             },
             "deck_size": len(self.deck),
             "discard_count": len(self.discard_pile),
@@ -249,6 +255,7 @@ class SaboteurEnv:
             if goal_tile is None or goal_tile.card.goal_kind is None:
                 raise RuntimeError("Goal card is missing")
             player.known_goals[action.goal_index] = goal_tile.card.goal_kind
+            player.known_goal_cards[action.goal_index] = goal_tile.card
             self.discard_pile.append(card.public_dict())
             self.history.append(
                 PublicEvent(

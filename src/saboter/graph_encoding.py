@@ -33,7 +33,10 @@ from saboter.observation import (
     TOOL_NAMES,
     _board_goal_knowledge,
     _board_structure_features,
+    _known_goal_cards,
     _known_goals,
+    _privately_known_goal_connection_pairs,
+    _privately_known_goal_edges,
 )
 
 
@@ -123,6 +126,11 @@ GRAPH_NODE_FEATURE_NAMES = (
     "known_stone",
     "private_known_gold",
     "private_known_stone",
+    "private_card_goal_gold",
+    "private_card_goal_stone_ne",
+    "private_card_goal_stone_nw",
+    *(f"private_has_{direction}" for direction in DIRECTIONS),
+    *(f"private_connects_{pair[0]}_{pair[1]}" for pair in CONNECTION_PAIRS),
     "reachable_from_start",
     "frontier_empty",
     "distance_from_start_norm",
@@ -388,6 +396,7 @@ def _cell_features(
     if tile is None:
         _set(row, "empty", 1.0)
     else:
+        private_goal_cards = _known_goal_cards(observation)
         _set(row, "occupied", 1.0)
         kind = tile.get("kind")
         if kind == "start":
@@ -404,19 +413,34 @@ def _cell_features(
                 _set(row, "known_gold", 1.0)
             elif goal_kind == GoalKind.STONE.value:
                 _set(row, "known_stone", 1.0)
-            private_kind = _known_goals(observation).get(goal_index) if isinstance(goal_index, int) else None
-            if private_kind == GoalKind.GOLD.value:
-                _set(row, "private_known_gold", 1.0)
-            elif private_kind == GoalKind.STONE.value:
-                _set(row, "private_known_stone", 1.0)
+            if isinstance(goal_index, int) and not revealed:
+                private_kind = _known_goals(observation).get(goal_index)
+                if private_kind == GoalKind.GOLD.value:
+                    _set(row, "private_known_gold", 1.0)
+                elif private_kind == GoalKind.STONE.value:
+                    _set(row, "private_known_stone", 1.0)
+                _set_private_goal_card_features(row, private_goal_cards.get(goal_index))
         if tile.get("reachable"):
             _set(row, "reachable_from_start", 1.0)
         card = tile.get("card")
         rotation = rotation_or_zero(tile.get("rotation", 0))
-        for direction in rotated_edges_from_card(card, rotation):
-            _set(row, f"has_{direction}", 1.0)
-        for pair in connection_pairs_from_card(card, rotation):
-            _set(row, f"connects_{pair[0]}_{pair[1]}", 1.0)
+        if (
+            kind == "goal"
+            and not bool(tile.get("revealed"))
+            and isinstance(tile.get("goal_index"), int)
+        ):
+            private_card = private_goal_cards.get(int(tile["goal_index"]))
+            for direction in _privately_known_goal_edges(private_card):
+                _set(row, f"private_has_{direction}", 1.0)
+            for pair in _privately_known_goal_connection_pairs(private_card):
+                _set(row, f"private_connects_{pair[0]}_{pair[1]}", 1.0)
+        else:
+            edges = rotated_edges_from_card(card, rotation)
+            connection_pairs = connection_pairs_from_card(card, rotation)
+            for direction in edges:
+                _set(row, f"has_{direction}", 1.0)
+            for pair in connection_pairs:
+                _set(row, f"connects_{pair[0]}_{pair[1]}", 1.0)
     if coord in frontier_distances:
         _set(row, "frontier_empty", 1.0)
     distance_from_start = tile_distances.get(coord, frontier_distances.get(coord))
@@ -434,6 +458,7 @@ def _add_goal_nodes(
 ) -> list[int]:
     public_known = _board_goal_knowledge(observation)
     private_known = _known_goals(observation)
+    private_cards = _known_goal_cards(observation)
     result: list[int] = []
     for goal_index, coord in enumerate(GOAL_COORDS):
         row = _empty_features()
@@ -448,11 +473,18 @@ def _add_goal_nodes(
             _set(row, "public_known_stone", 1.0)
         else:
             _set(row, "public_unknown", 1.0)
-        private_kind = private_known.get(goal_index)
-        if private_kind == GoalKind.GOLD.value:
-            _set(row, "private_known_gold", 1.0)
-        elif private_kind == GoalKind.STONE.value:
-            _set(row, "private_known_stone", 1.0)
+        if public_kind is None:
+            private_kind = private_known.get(goal_index)
+            if private_kind == GoalKind.GOLD.value:
+                _set(row, "private_known_gold", 1.0)
+            elif private_kind == GoalKind.STONE.value:
+                _set(row, "private_known_stone", 1.0)
+            private_card = private_cards.get(goal_index)
+            _set_private_goal_card_features(row, private_card)
+            for direction in _privately_known_goal_edges(private_card):
+                _set(row, f"private_has_{direction}", 1.0)
+            for pair in _privately_known_goal_connection_pairs(private_card):
+                _set(row, f"private_connects_{pair[0]}_{pair[1]}", 1.0)
         node = builder.add_node("goal", row)
         result.append(node)
         cell = cell_indices.get(coord)
@@ -597,7 +629,7 @@ def _history_features(
     card = event.get("card")
     if isinstance(card, dict):
         card_type = card.get("type")
-        if isinstance(card_type, str):
+        if isinstance(card_type, str) and card_type in CARD_TYPE_NAMES:
             _set(row, f"card_type_{card_type}", 1.0)
     actor = event.get("actor")
     if isinstance(actor, int):
@@ -685,7 +717,7 @@ def _card_features(card: dict[str, object]) -> list[float]:
 
 def _merge_card_features(row: list[float], card: dict[str, object], rotation: int) -> None:
     card_type = card.get("type")
-    if isinstance(card_type, str):
+    if isinstance(card_type, str) and card_type in CARD_TYPE_NAMES:
         _set(row, f"card_type_{card_type}", 1.0)
     tools = card.get("tools", [])
     if isinstance(tools, list):
@@ -720,6 +752,16 @@ def _set_target(row: list[float], target_player: int, observer_id: int, num_play
         "target_relative_norm",
         normalize_count((target_player - observer_id) % num_players, max(1, num_players - 1)),
     )
+
+
+def _set_private_goal_card_features(row: list[float], card: dict[str, object] | None) -> None:
+    card_id = card.get("id") if isinstance(card, dict) else None
+    if card_id == "goal_gold":
+        _set(row, "private_card_goal_gold", 1.0)
+    elif card_id == "goal_stone_ne":
+        _set(row, "private_card_goal_stone_ne", 1.0)
+    elif card_id == "goal_stone_nw":
+        _set(row, "private_card_goal_stone_nw", 1.0)
 
 
 def _role_labels(env: SaboteurEnv, observer_id: int) -> list[float]:

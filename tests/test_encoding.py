@@ -312,6 +312,33 @@ def test_history_encoder_keeps_opponent_map_result_hidden():
     assert row[HISTORY_FEATURE_NAMES.index("revealed_stone")] == 0.0
 
 
+def test_map_goal_private_card_shape_reaches_board_encoder_only_for_actor():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=618)
+    env.board = Board([GOAL_STONE_NW_CARD, GOAL_GOLD_CARD, GOAL_STONE_NE_CARD])
+    env.players[0].hand = [action_card(CardType.MAP)]
+    env.deck = [path_card_by_id("path_ew")]
+
+    env.step(MapGoal(0, 0))
+
+    actor_board = encode_board_tensor(env.observe(0), [])
+    other_board = encode_board_tensor(env.observe(1), [])
+    goal_x, goal_y = GOAL_COORDS[0]
+    row = goal_y - BOARD_MIN_Y
+    col = goal_x - BOARD_MIN_X
+
+    assert actor_board[BOARD_CHANNEL_NAMES.index("private_known_stone")][row][col] == 1.0
+    assert actor_board[BOARD_CHANNEL_NAMES.index("private_known_card_goal_stone_nw")][row][col] == 1.0
+    assert actor_board[BOARD_CHANNEL_NAMES.index("has_N")][row][col] == 0.0
+    assert actor_board[BOARD_CHANNEL_NAMES.index("connects_N_W")][row][col] == 0.0
+    assert actor_board[BOARD_CHANNEL_NAMES.index("private_known_connects_N_W")][row][col] == 1.0
+    assert actor_board[BOARD_CHANNEL_NAMES.index("private_known_connects_E_S")][row][col] == 1.0
+    assert other_board[BOARD_CHANNEL_NAMES.index("private_known_stone")][row][col] == 0.0
+    assert other_board[BOARD_CHANNEL_NAMES.index("connects_N_W")][row][col] == 0.0
+    assert other_board[BOARD_CHANNEL_NAMES.index("private_known_connects_N_W")][row][col] == 0.0
+    assert other_board[BOARD_CHANNEL_NAMES.index("private_known_connects_E_S")][row][col] == 0.0
+
+
 def test_every_public_history_action_type_can_be_encoded():
     env = SaboteurEnv(num_players=5)
     env.reset(seed=617)
@@ -353,7 +380,13 @@ def test_every_public_history_action_type_can_be_encoded():
             y=0,
             removed_card=path_card_by_id("path_ew").public_dict(),
         ),
-        PublicEvent(actor=1, action_type="reveal_goal", goal_index=2, revealed_goal_kind=GoalKind.STONE.value),
+        PublicEvent(
+            actor=1,
+            action_type="reveal_goal",
+            card=GOAL_STONE_NW_CARD.public_dict(),
+            goal_index=2,
+            revealed_goal_kind=GoalKind.STONE.value,
+        ),
     ]
 
     history = encode_observation(env, 0).history

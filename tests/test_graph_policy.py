@@ -7,8 +7,19 @@ from scripts.train_ppo import (
     _serialize_graph_rollout_games,
     main as train_ppo_main,
 )
+from saboter.actions import MapGoal
 from saboter.agents.graph_neural_agent import GraphNeuralAgent
-from saboter.env import SaboteurEnv
+from saboter.board import Board
+from saboter.cards import (
+    CardType,
+    GOAL_GOLD_CARD,
+    GOAL_STONE_NE_CARD,
+    GOAL_STONE_NW_CARD,
+    GoalKind,
+    action_card,
+    path_card_by_id,
+)
+from saboter.env import PublicEvent, SaboteurEnv
 from saboter.graph_encoding import (
     EDGE_TYPE_NAMES,
     GRAPH_F,
@@ -57,6 +68,65 @@ def test_graph_encoder_builds_valid_action_node_graph_without_goal_leakage():
     for row in hidden_goal_rows:
         assert row[GRAPH_F["known_gold"]] == 0.0
         assert row[GRAPH_F["known_stone"]] == 0.0
+
+
+def test_graph_encoder_accepts_reveal_history_goal_card():
+    env = SaboteurEnv(num_players=5)
+    env.reset(seed=814)
+    env.history = [
+        PublicEvent(
+            actor=1,
+            action_type="reveal_goal",
+            card=GOAL_STONE_NW_CARD.public_dict(),
+            rotation=180,
+            goal_index=0,
+            revealed_goal_kind=GoalKind.STONE.value,
+        )
+    ]
+
+    graph = encode_graph(env, env.agent_selection, env.legal_actions())
+
+    history_type = NODE_TYPE_IDS["history"]
+    history_rows = [
+        row
+        for row, node_type in zip(graph.node_features, graph.node_type_ids)
+        if node_type == history_type
+    ]
+    assert history_rows
+    assert history_rows[-1][GRAPH_F["revealed_stone"]] == 1.0
+
+
+def test_graph_encoder_exposes_private_mapped_goal_shape_only_to_actor():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=815)
+    env.board = Board([GOAL_STONE_NW_CARD, GOAL_GOLD_CARD, GOAL_STONE_NE_CARD])
+    env.players[0].hand = [action_card(CardType.MAP)]
+    env.deck = [path_card_by_id("path_ew")]
+
+    env.step(MapGoal(0, 0))
+
+    actor_graph = encode_graph(env, 0, env.legal_actions(0))
+    other_graph = encode_graph(env, 1, env.legal_actions(1))
+    goal_type = NODE_TYPE_IDS["goal"]
+
+    def goal_row(graph):
+        for row, node_type in zip(graph.node_features, graph.node_type_ids):
+            if node_type == goal_type and row[GRAPH_F["goal_0"]] == 1.0:
+                return row
+        raise AssertionError("goal node not found")
+
+    actor_row = goal_row(actor_graph)
+    other_row = goal_row(other_graph)
+
+    assert actor_row[GRAPH_F["private_known_stone"]] == 1.0
+    assert actor_row[GRAPH_F["private_card_goal_stone_nw"]] == 1.0
+    assert actor_row[GRAPH_F["connects_N_W"]] == 0.0
+    assert actor_row[GRAPH_F["private_connects_N_W"]] == 1.0
+    assert actor_row[GRAPH_F["private_connects_E_S"]] == 1.0
+    assert other_row[GRAPH_F["private_known_stone"]] == 0.0
+    assert other_row[GRAPH_F["connects_N_W"]] == 0.0
+    assert other_row[GRAPH_F["private_connects_N_W"]] == 0.0
+    assert other_row[GRAPH_F["private_connects_E_S"]] == 0.0
 
 
 def test_graph_policy_scores_single_and_batched_graphs():
