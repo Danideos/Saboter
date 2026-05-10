@@ -170,8 +170,11 @@ def render_html_game(result: object) -> str:
       --focus: #2d6cdf;
     }}
     * {{ box-sizing: border-box; }}
+    html {{ height: 100%; overflow: hidden; }}
     body {{
+      height: 100%;
       margin: 0;
+      overflow: hidden;
       background: var(--bg);
       color: var(--text);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -179,9 +182,11 @@ def render_html_game(result: object) -> str:
     .shell {{
       display: grid;
       grid-template-columns: 320px minmax(0, 1fr);
-      min-height: 100vh;
+      height: 100vh;
+      min-height: 0;
     }}
     aside {{
+      min-height: 0;
       background: var(--panel);
       border-right: 1px solid var(--line);
       padding: 18px;
@@ -189,9 +194,12 @@ def render_html_game(result: object) -> str:
     }}
     main {{
       min-width: 0;
+      min-height: 0;
+      height: 100vh;
+      overflow: hidden;
       padding: 18px;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) 206px;
       gap: 14px;
     }}
     h1 {{
@@ -225,6 +233,7 @@ def render_html_game(result: object) -> str:
       gap: 8px;
     }}
     .player {{
+      position: relative;
       display: grid;
       grid-template-columns: 34px 1fr auto;
       gap: 8px;
@@ -310,6 +319,26 @@ def render_html_game(result: object) -> str:
       border-color: transparent;
       background: transparent;
     }}
+    .action-badge {{
+      position: absolute;
+      right: -6px;
+      top: -7px;
+      z-index: 3;
+      min-width: 36px;
+      border: 1px solid var(--focus);
+      border-radius: 999px;
+      padding: 2px 5px;
+      background: #ffffff;
+      color: var(--focus);
+      font-size: 11px;
+      font-weight: 800;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(23, 32, 42, 0.14);
+    }}
+    .action-badge.selected {{
+      background: var(--focus);
+      color: #ffffff;
+    }}
     .edge {{
       position: absolute;
       background: var(--path);
@@ -360,7 +389,7 @@ def render_html_game(result: object) -> str:
     }}
     .event-panel {{
       display: grid;
-      grid-template-rows: auto minmax(180px, 320px) minmax(0, 1fr);
+      grid-template-rows: auto minmax(130px, 240px) minmax(0, 1fr);
     }}
     .event-current {{
       border-bottom: 1px solid var(--line);
@@ -416,6 +445,155 @@ def render_html_game(result: object) -> str:
       color: var(--muted);
       font-variant-numeric: tabular-nums;
     }}
+    .hand-tray {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 12px;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }}
+    .hand-toolbar {{
+      display: grid;
+      grid-template-columns: minmax(110px, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      color: var(--muted);
+    }}
+    .hand-controls {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex: 0 0 auto;
+    }}
+    .mode-tabs,
+    .rotation-tabs {{
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+      background: #fbfcfd;
+    }}
+    .mode-tabs button,
+    .rotation-tabs button {{
+      border: 0;
+      border-right: 1px solid var(--line);
+      padding: 4px 10px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+    }}
+    .mode-tabs button:last-child,
+    .rotation-tabs button:last-child {{ border-right: 0; }}
+    .mode-tabs button.active,
+    .rotation-tabs button.active {{
+      background: var(--focus);
+      color: #ffffff;
+    }}
+    .rotation-tabs {{
+      width: 82px;
+      justify-content: stretch;
+    }}
+    .rotation-tabs button {{
+      flex: 1;
+      padding-inline: 0;
+    }}
+    .rotation-tabs button:disabled {{
+      color: #aab3bd;
+      cursor: default;
+    }}
+    .hand-cards {{
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 4px;
+      min-height: 0;
+      align-items: flex-start;
+    }}
+    .hand-card-stack {{
+      flex: 0 0 88px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-height: 0;
+    }}
+    .hand-card {{
+      position: relative;
+      width: 88px;
+      height: 104px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(#fffdf7, #efe4cd);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 7px;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(23, 32, 42, 0.08);
+    }}
+    .hand-card.selected {{
+      border-color: var(--focus);
+      box-shadow: 0 0 0 2px rgba(45, 108, 223, 0.22), 0 4px 12px rgba(23, 32, 42, 0.14);
+    }}
+    .hand-card-title {{
+      font-size: 11px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+      line-height: 1.05;
+    }}
+    .hand-card-art {{
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(122, 79, 42, 0.28);
+      border-radius: 5px;
+      background: var(--path-bg);
+      overflow: hidden;
+    }}
+    .hand-card-meta {{
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1;
+      gap: 4px;
+    }}
+    .hand-card-scores {{
+      display: grid;
+      gap: 2px;
+      flex: 0 0 auto;
+    }}
+    .hand-card-prob,
+    .discard-score {{
+      border: 1px solid rgba(45, 108, 223, 0.35);
+      border-radius: 999px;
+      padding: 1px 5px;
+      background: rgba(255, 255, 255, 0.94);
+      color: var(--focus);
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.35;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }}
+    .card-score {{
+      color: var(--focus);
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }}
+    .discard-score {{
+      border-color: rgba(100, 112, 125, 0.32);
+      color: var(--muted);
+    }}
     .event-list {{
       overflow: auto;
       padding: 8px;
@@ -438,7 +616,8 @@ def render_html_game(result: object) -> str:
     .event-row:hover {{ background: #f1f4f7; color: var(--text); }}
     @media (max-width: 900px) {{
       .shell {{ grid-template-columns: 1fr; }}
-      aside {{ border-right: 0; border-bottom: 1px solid var(--line); }}
+      aside {{ border-right: 0; border-bottom: 1px solid var(--line); max-height: 170px; }}
+      main {{ height: calc(100vh - 170px); }}
       .viewer {{ grid-template-columns: 1fr; }}
       .controls {{ grid-template-columns: minmax(160px, 1fr) 92px; }}
       .step-label {{ text-align: left; }}
@@ -476,6 +655,19 @@ def render_html_game(result: object) -> str:
           <div class="event-list" id="eventList"></div>
         </div>
       </section>
+      <section class="hand-tray">
+        <div class="hand-toolbar">
+          <strong id="handTitle">Hand</strong>
+          <div class="hand-controls">
+            <div class="mode-tabs" id="overlayTabs" aria-label="Overlay mode">
+              <button type="button" data-overlay-mode="prob" class="active">Policy %</button>
+              <button type="button" data-overlay-mode="chosen">Chosen</button>
+            </div>
+            <div class="rotation-tabs" id="rotationTabs" aria-label="Path rotation"></div>
+          </div>
+        </div>
+        <div class="hand-cards" id="handCards"></div>
+      </section>
     </main>
   </div>
   <script id="replay-data" type="application/json">{payload_json}</script>
@@ -486,9 +678,14 @@ def render_html_game(result: object) -> str:
     const events = data.events;
     const eventLabels = data.eventLabels;
     const debugSteps = data.debugSteps || [];
+    const goalCoords = [[8, -2], [8, 0], [8, 2]];
     const slider = document.getElementById("stepSlider");
     const board = document.getElementById("board");
     const eventList = document.getElementById("eventList");
+    let currentStep = -1;
+    let selectedCardSlot = null;
+    let selectedRotation = 0;
+    let overlayMode = "prob";
 
     slider.max = Math.max(0, snapshots.length - 1);
     slider.addEventListener("input", () => render(Number(slider.value)));
@@ -503,6 +700,15 @@ def render_html_game(result: object) -> str:
       const actions = document.getElementById("actions");
       Object.entries(game.action_counts || {{}}).forEach(([name, count]) => {{
         actions.appendChild(pill(`${{name}} ${{count}}`));
+      }});
+      document.querySelectorAll("[data-overlay-mode]").forEach(button => {{
+        button.addEventListener("click", () => {{
+          overlayMode = button.dataset.overlayMode || "prob";
+          document.querySelectorAll("[data-overlay-mode]").forEach(node => {{
+            node.classList.toggle("active", node.dataset.overlayMode === overlayMode);
+          }});
+          render(currentStep < 0 ? 0 : currentStep);
+        }});
       }});
       events.forEach((event, index) => {{
         const row = document.createElement("div");
@@ -520,13 +726,24 @@ def render_html_game(result: object) -> str:
 
     function render(step) {{
       const snapshot = snapshots[step] || [];
+      const debug = debugSteps[step] || null;
+      if (step !== currentStep) {{
+        currentStep = step;
+        selectedCardSlot = defaultSelectedCardSlot(debug);
+        selectedRotation = defaultSelectedRotation(debug);
+      }}
       renderPlayers(step);
-      const bounds = getBounds(snapshot);
+      const cellActions = cellActionMap(debug);
+      const bounds = getBounds(snapshot, cellActions);
       board.style.gridTemplateColumns = `repeat(${{bounds.width}}, 58px)`;
       board.replaceChildren();
       for (let y = bounds.minY; y <= bounds.maxY; y++) {{
         for (let x = bounds.minX; x <= bounds.maxX; x++) {{
-          board.appendChild(renderTile(snapshot.find(tile => tile.x === x && tile.y === y)));
+          const key = coordKey(x, y);
+          board.appendChild(renderTile(
+            snapshot.find(tile => tile.x === x && tile.y === y),
+            cellActions.get(key) || []
+          ));
         }}
       }}
       document.getElementById("stepTitle").textContent =
@@ -537,6 +754,7 @@ def render_html_game(result: object) -> str:
       document.getElementById("eventDetail").textContent =
         step === 0 ? "Start card and hidden goals are public." : eventLabels[step - 1];
       renderDebug(step);
+      renderHandTray(step);
       [...eventList.children].forEach((row, index) => {{
         row.classList.toggle("active", index === step - 1);
       }});
@@ -544,6 +762,7 @@ def render_html_game(result: object) -> str:
 
     function renderPlayers(step) {{
       const players = document.getElementById("players");
+      const targetActions = targetActionMap(debugSteps[step] || null);
       players.replaceChildren();
       game.agent_names.forEach((agent, id) => {{
         const finalRole = game.roles[String(id)] ?? game.roles[id] ?? "?";
@@ -561,6 +780,14 @@ def render_html_game(result: object) -> str:
           </div>
           <strong>${{reward}}</strong>
         `;
+        const actions = targetActions.get(Number(id)) || [];
+        if (actions.length) {{
+          row.title += ` | selected-card policy: ${{actions.map(formatActionProb).join(", ")}}`;
+          const badge = document.createElement("span");
+          badge.className = `action-badge${{actions.some(action => action.selected) ? " selected" : ""}}`;
+          badge.textContent = bestActionLabel(actions);
+          row.appendChild(badge);
+        }}
         players.appendChild(row);
       }});
     }}
@@ -591,44 +818,102 @@ def render_html_game(result: object) -> str:
       discard.appendChild(discardCards);
       panel.appendChild(discard);
 
-      const hands = document.createElement("div");
-      hands.innerHTML = `<div class="debug-title">Hands</div>`;
-      Object.entries(debug.hands || {{}}).forEach(([playerId, hand]) => {{
-        const row = document.createElement("div");
-        row.className = "hand-row";
-        const cards = document.createElement("div");
-        cards.className = "cards";
-        (hand || []).forEach((card, index) => cards.appendChild(chip(`${{index}}:${{cardName(card)}}`)));
-        if (!cards.children.length) cards.appendChild(chip("empty"));
-        row.appendChild(strong(`P${{playerId}}`));
-        row.appendChild(cards);
-        hands.appendChild(row);
-      }});
-      panel.appendChild(hands);
-
-      const scored = Array.isArray(debug.legal_actions)
-        ? debug.legal_actions.filter(action => typeof action.score === "number")
-        : [];
+      const scored = scoredActions(debug);
       if (scored.length) {{
         const scores = document.createElement("div");
-        scores.innerHTML = `<div class="debug-title">Legal action scores</div>`;
-        scored
-          .slice()
-          .sort((left, right) => Number(right.score) - Number(left.score))
+        scores.innerHTML = `<div class="debug-title">Selected card policy</div>`;
+        selectedCardActions(debug)
+          .sort((left, right) => Number(right.prob || 0) - Number(left.prob || 0))
           .forEach(action => {{
             const row = document.createElement("div");
             row.className = `score-row${{action.selected ? " selected" : ""}}`;
-            row.innerHTML = `<strong>${{escapeText(action.label)}}</strong><span class="score-value">score=${{Number(action.score).toFixed(3)}}</span>`;
+            row.title = typeof action.score === "number" ? `raw logit ${{Number(action.score).toFixed(4)}}` : "";
+            row.innerHTML = `<strong>${{escapeText(compactActionLabel(action))}}</strong><span class="score-value">${{formatPercent(action.prob || 0)}}</span>`;
             scores.appendChild(row);
           }});
-        panel.appendChild(scores);
+        if (scores.children.length > 1) panel.appendChild(scores);
       }}
     }}
 
-    function renderTile(tile) {{
+    function renderHandTray(step) {{
+      const debug = debugSteps[step] || null;
+      const handCards = document.getElementById("handCards");
+      const rotationTabs = document.getElementById("rotationTabs");
+      const handTitle = document.getElementById("handTitle");
+      handCards.replaceChildren();
+      rotationTabs.replaceChildren();
+      if (!debug || debug.actor === null || debug.actor === undefined) {{
+        handTitle.textContent = "Hand";
+        handCards.appendChild(chip("No decision hand for this step"));
+        return;
+      }}
+      const actor = String(debug.actor);
+      const hand = (debug.hands || {{}})[actor] || [];
+      handTitle.textContent = `P${{actor}} hand`;
+      hand.forEach((card, slot) => {{
+        const node = renderHandCard(card, slot, debug);
+        handCards.appendChild(node);
+      }});
+      if (!hand.length) handCards.appendChild(chip("empty"));
+
+      const selectedCard = hand[selectedCardSlot];
+      if (selectedCard && selectedCard.type === "path") {{
+        [0, 180].forEach(rotation => {{
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = rotation === selectedRotation ? "active" : "";
+          button.textContent = `r${{rotation}}`;
+          button.addEventListener("click", () => {{
+            selectedRotation = rotation;
+            render(currentStep);
+          }});
+          rotationTabs.appendChild(button);
+        }});
+      }} else {{
+        [0, 180].forEach(rotation => {{
+          const button = document.createElement("button");
+          button.type = "button";
+          button.disabled = true;
+          button.textContent = `r${{rotation}}`;
+          rotationTabs.appendChild(button);
+        }});
+      }}
+    }}
+
+    function renderHandCard(card, slot, debug) {{
+      const node = document.createElement("div");
+      node.className = "hand-card-stack";
+      const cardActions = scoredActionsForCard(debug, slot);
+      const totalProb = cardProbability(debug, slot);
+      const discardProb = actionTypeProbability(cardActions, "discard");
+      const cardRotation = slot === selectedCardSlot ? selectedRotation : 0;
+      const groups = card && Array.isArray(card.groups) ? rotatedGroups(card.groups, cardRotation) : [];
+      node.innerHTML = `
+        <button type="button" class="hand-card${{slot === selectedCardSlot ? " selected" : ""}}">
+          <div class="hand-card-title">${{escapeText(cardName(card))}}</div>
+          <div class="hand-card-art">${{renderTunnels(groups)}}<span class="center">${{cardGlyph(card)}}</span></div>
+          <div class="hand-card-meta"><span>slot ${{slot}}</span><span></span></div>
+        </button>
+        <div class="hand-card-scores">
+          <div class="hand-card-prob">total ${{formatPercent(totalProb)}}</div>
+          ${{discardProb ? `<div class="discard-score">discard ${{formatPercent(discardProb)}}</div>` : ""}}
+        </div>
+      `;
+      const cardButton = node.querySelector(".hand-card");
+      cardButton.title = JSON.stringify(card);
+      cardButton.addEventListener("click", () => {{
+        selectedCardSlot = slot;
+        selectedRotation = 0;
+        render(currentStep);
+      }});
+      return node;
+    }}
+
+    function renderTile(tile, actions = []) {{
       const div = document.createElement("div");
       if (!tile) {{
         div.className = "tile empty";
+        appendActionBadges(div, actions);
         return div;
       }}
       const groups = tileGroups(tile);
@@ -644,13 +929,33 @@ def render_html_game(result: object) -> str:
         ${{renderTunnels(groups)}}
         <span class="center">${{center}}</span>
       `;
+      appendActionBadges(div, actions);
       return div;
     }}
 
-    function getBounds(snapshot) {{
-      if (!snapshot.length) return {{minX: 0, maxX: 0, minY: 0, maxY: 0, width: 1}};
+    function appendActionBadges(tileNode, actions) {{
+      if (!actions.length) return;
+      const visible = overlayMode === "chosen"
+        ? actions.filter(action => action.selected)
+        : actions;
+      if (!visible.length) return;
+      const best = visible.slice().sort((left, right) => Number(right.prob || 0) - Number(left.prob || 0))[0];
+      const badge = document.createElement("span");
+      badge.className = `action-badge${{visible.some(action => action.selected) ? " selected" : ""}}`;
+      badge.textContent = overlayMode === "chosen" ? "played" : formatPercent(best.prob || 0);
+      badge.title = visible.map(formatActionProb).join("\\n");
+      tileNode.appendChild(badge);
+    }}
+
+    function getBounds(snapshot, cellActions = new Map()) {{
+      if (!snapshot.length && !cellActions.size) return {{minX: 0, maxX: 0, minY: 0, maxY: 0, width: 1}};
       const xs = snapshot.map(tile => tile.x);
       const ys = snapshot.map(tile => tile.y);
+      for (const key of cellActions.keys()) {{
+        const [x, y] = key.split(",").map(Number);
+        xs.push(x);
+        ys.push(y);
+      }}
       const minX = Math.min(...xs);
       const maxX = Math.max(...xs);
       const minY = Math.min(...ys);
@@ -736,6 +1041,130 @@ def render_html_game(result: object) -> str:
       if (normalized !== 180) return edgeSet;
       const opposite = {{n: "s", e: "w", s: "n", w: "e"}};
       return new Set([...edgeSet].map(edge => opposite[edge]).filter(Boolean));
+    }}
+
+    function defaultSelectedCardSlot(debug) {{
+      if (!debug) return null;
+      if (debug.selected_action && Number.isInteger(debug.selected_action.card_slot)) {{
+        return debug.selected_action.card_slot;
+      }}
+      const actor = debug.actor;
+      const hand = actor === null || actor === undefined ? [] : ((debug.hands || {{}})[String(actor)] || []);
+      return hand.length ? 0 : null;
+    }}
+
+    function defaultSelectedRotation(debug) {{
+      if (debug && debug.selected_action && Number.isInteger(debug.selected_action.rotation)) {{
+        return debug.selected_action.rotation;
+      }}
+      return 0;
+    }}
+
+    function scoredActions(debug) {{
+      if (!debug || !Array.isArray(debug.legal_actions)) return [];
+      const scored = debug.legal_actions
+        .filter(action => typeof action.score === "number")
+        .map(action => ({{...action}}));
+      const maxScore = scored.length ? Math.max(...scored.map(action => Number(action.score))) : 0;
+      const weights = scored.map(action => Math.exp(Number(action.score) - maxScore));
+      const total = weights.reduce((sum, value) => sum + value, 0);
+      scored.forEach((action, index) => {{
+        action.prob = total > 0 ? weights[index] / total : 0;
+      }});
+      return scored;
+    }}
+
+    function scoredActionsForCard(debug, slot) {{
+      return scoredActions(debug).filter(action => action.card_slot === slot);
+    }}
+
+    function cardProbability(debug, slot) {{
+      return scoredActionsForCard(debug, slot)
+        .reduce((sum, action) => sum + Number(action.prob || 0), 0);
+    }}
+
+    function actionTypeProbability(actions, type) {{
+      return actions
+        .filter(action => action.type === type)
+        .reduce((sum, action) => sum + Number(action.prob || 0), 0);
+    }}
+
+    function selectedCardActions(debug) {{
+      return scoredActions(debug).filter(action => {{
+        if (action.card_slot !== selectedCardSlot) return false;
+        if (action.type === "play_path" && Number.isInteger(action.rotation)) {{
+          return action.rotation === selectedRotation;
+        }}
+        return true;
+      }});
+    }}
+
+    function cellActionMap(debug) {{
+      const result = new Map();
+      selectedCardActions(debug).forEach(action => {{
+        let x = action.x;
+        let y = action.y;
+        if (action.type === "map_goal" && Number.isInteger(action.goal_index)) {{
+          const coord = goalCoords[action.goal_index];
+          if (coord) {{
+            x = coord[0];
+            y = coord[1];
+          }}
+        }}
+        if (!Number.isInteger(x) || !Number.isInteger(y)) return;
+        const key = coordKey(x, y);
+        if (!result.has(key)) result.set(key, []);
+        result.get(key).push(action);
+      }});
+      return result;
+    }}
+
+    function targetActionMap(debug) {{
+      const result = new Map();
+      selectedCardActions(debug).forEach(action => {{
+        if (overlayMode === "chosen" && !action.selected) return;
+        if (!Number.isInteger(action.target_player)) return;
+        if (!result.has(action.target_player)) result.set(action.target_player, []);
+        result.get(action.target_player).push(action);
+      }});
+      return result;
+    }}
+
+    function coordKey(x, y) {{
+      return `${{x}},${{y}}`;
+    }}
+
+    function formatPercent(value) {{
+      return `${{Math.round(Number(value || 0) * 100)}}%`;
+    }}
+
+    function formatActionProb(action) {{
+      return `${{formatPercent(action.prob || 0)}} ${{action.label}}`;
+    }}
+
+    function compactActionLabel(action) {{
+      if (action.type === "play_path") return `place (${{action.x}}, ${{action.y}}) r${{action.rotation}}`;
+      if (action.type === "rockfall") return `rockfall (${{action.x}}, ${{action.y}})`;
+      if (action.type === "map_goal") return `map goal ${{action.goal_index}}`;
+      if (action.type === "sabotage") return `sabotage P${{action.target_player}} ${{action.tool}}`;
+      if (action.type === "repair") return `repair P${{action.target_player}} ${{action.tool}}`;
+      if (action.type === "discard") return "discard";
+      return action.label || action.type || "action";
+    }}
+
+    function bestActionLabel(actions) {{
+      const best = actions.slice().sort((left, right) => Number(right.prob || 0) - Number(left.prob || 0))[0];
+      return best ? formatPercent(best.prob || 0) : "";
+    }}
+
+    function cardGlyph(card) {{
+      if (!card) return "?";
+      if (card.type === "map") return "map";
+      if (card.type === "sabotage") return "break";
+      if (card.type === "repair") return "fix";
+      if (card.type === "rockfall") return "rock";
+      if (card.type === "goal") return card.goal_kind === "gold" ? "$" : "X";
+      return card.id && String(card.id).startsWith("dead") ? "x" : "+";
     }}
 
     function pill(text) {{

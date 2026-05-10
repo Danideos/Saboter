@@ -23,6 +23,7 @@ from saboter.env import PublicEvent, SaboteurEnv
 from saboter.graph_encoding import (
     EDGE_TYPE_NAMES,
     GRAPH_F,
+    GRAPH_MAX_HISTORY,
     NODE_TYPE_IDS,
     NODE_TYPE_NAMES,
     encode_graph,
@@ -94,6 +95,26 @@ def test_graph_encoder_accepts_reveal_history_goal_card():
     ]
     assert history_rows
     assert history_rows[-1][GRAPH_F["revealed_stone"]] == 1.0
+
+
+def test_graph_encoder_keeps_more_than_twenty_history_events():
+    env = SaboteurEnv(num_players=5)
+    env.reset(seed=816)
+    env.history = [
+        PublicEvent(actor=1, action_type="discard")
+        for _ in range(30)
+    ]
+
+    graph = encode_graph(env, env.agent_selection, env.legal_actions())
+
+    history_type = NODE_TYPE_IDS["history"]
+    history_rows = [
+        row
+        for row, node_type in zip(graph.node_features, graph.node_type_ids)
+        if node_type == history_type
+    ]
+    assert GRAPH_MAX_HISTORY == 60
+    assert len(history_rows) == 30
 
 
 def test_graph_encoder_exposes_private_mapped_goal_shape_only_to_actor():

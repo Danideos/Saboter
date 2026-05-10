@@ -28,7 +28,6 @@ from saboter.observation import (
     HISTORY_ACTION_TYPES,
     MAX_DECK_SIZE,
     MAX_HAND_SIZE,
-    MAX_HISTORY,
     MAX_PLAYERS,
     TOOL_NAMES,
     _board_goal_knowledge,
@@ -38,6 +37,9 @@ from saboter.observation import (
     _privately_known_goal_connection_pairs,
     _privately_known_goal_edges,
 )
+
+
+GRAPH_MAX_HISTORY = 60
 
 
 NODE_TYPE_NAMES = (
@@ -584,7 +586,7 @@ def _add_history_nodes(
     history = observation.get("history", [])
     if not isinstance(history, list):
         return
-    recent = [event for event in history[-MAX_HISTORY:] if isinstance(event, dict)]
+    recent = [event for event in history[-GRAPH_MAX_HISTORY:] if isinstance(event, dict)]
     for recent_index, event in enumerate(recent):
         age_index = len(recent) - 1 - recent_index
         node = builder.add_node("history", _history_features(event, observer_id, num_players, age_index))
@@ -622,7 +624,7 @@ def _history_features(
 ) -> list[float]:
     row = _empty_features()
     _set(row, "present", 1.0)
-    _set(row, "age_norm", normalize_count(age_index, MAX_HISTORY - 1))
+    _set(row, "age_norm", normalize_count(age_index, GRAPH_MAX_HISTORY - 1))
     action_type = event.get("action_type")
     if isinstance(action_type, str):
         _set(row, f"history_action_{action_type}", 1.0)

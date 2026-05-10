@@ -171,6 +171,20 @@ def test_render_html_game_contains_slider_payload_and_board_script(tmp_path):
     assert "Saboteur Replay" in html
     assert "snapshots" in html
     assert "renderTunnels" in html
+    assert 'id="handCards"' in html
+    assert 'id="rotationTabs"' in html
+    assert "selectedCardActions" in html
+    assert "action-badge" in html
+    assert "Policy %" in html
+    assert "hand-card-stack" in html
+    assert "hand-card-scores" in html
+    assert "hand-card-prob" in html
+    assert "total ${formatPercent(totalProb)}" in html
+    assert "discard ${formatPercent(discardProb)}" in html
+    assert "compactActionLabel" in html
+
+    hand_card_snippet = html[html.index("function renderHandCard"):html.index("function renderTile")]
+    assert hand_card_snippet.index("hand-card-prob") < hand_card_snippet.index("discard-score")
 
     path = tmp_path / "replay.html"
     save_html_replay(path, result)
