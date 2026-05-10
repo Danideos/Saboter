@@ -36,6 +36,7 @@ from saboter.training.graph_rollout import (
     GraphTransition,
     collect_graph_rollouts,
 )
+from saboter.training.graph_tensorize import GraphTensors
 from saboter.training.ppo import PPOConfig, ppo_update
 from saboter.training.progress_metrics import (
     decision_progress_from_observation,
@@ -51,6 +52,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--games-per-worker", type=int, default=None)
     parser.add_argument("--worker-torch-threads", type=int, default=1)
+    parser.add_argument(
+        "--worker-transport",
+        choices=("torch", "plain"),
+        default="torch",
+        help="Use 'plain' on HPC/CPU servers to avoid PyTorch shared-memory tensor IPC.",
+    )
     parser.add_argument("--players", type=int, default=5)
     parser.add_argument("--model", choices=("flat", "graph"), default="flat")
     parser.add_argument("--device", default="cpu")
@@ -142,6 +149,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_games=games_per_iteration,
                 num_workers=args.num_workers,
                 worker_torch_threads=args.worker_torch_threads,
+                worker_transport=args.worker_transport,
                 seed=rollout_seed,
                 max_steps=args.max_steps,
                 reward_mode=args.reward_mode,
@@ -159,6 +167,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_games=games_per_iteration,
                 num_workers=args.num_workers,
                 worker_torch_threads=args.worker_torch_threads,
+                worker_transport=args.worker_transport,
                 seed=rollout_seed,
                 max_steps=args.max_steps,
                 reward_mode=args.reward_mode,
@@ -373,6 +382,7 @@ def _collect_iteration_rollouts(
     total_games: int,
     num_workers: int,
     worker_torch_threads: int,
+    worker_transport: str,
     seed: int,
     max_steps: int,
     reward_mode: str,
@@ -416,12 +426,18 @@ def _collect_iteration_rollouts(
                 reward_mode,
                 training_mode,
                 miners_only_actions,
+                worker_transport,
             )
             for worker_id, game_count in enumerate(worker_counts)
             if game_count > 0
         ]
         for future in futures:
-            games.extend(future.result())
+            result = future.result()
+            games.extend(
+                _deserialize_rollout_games(result)
+                if worker_transport == "plain"
+                else result
+            )
     return games
 
 
@@ -434,6 +450,7 @@ def _collect_iteration_graph_rollouts(
     total_games: int,
     num_workers: int,
     worker_torch_threads: int,
+    worker_transport: str,
     seed: int,
     max_steps: int,
     reward_mode: str,
@@ -474,12 +491,18 @@ def _collect_iteration_graph_rollouts(
                 reward_mode,
                 training_mode,
                 miners_only_actions,
+                worker_transport,
             )
             for worker_id, game_count in enumerate(worker_counts)
             if game_count > 0
         ]
         for future in futures:
-            games.extend(future.result())
+            result = future.result()
+            games.extend(
+                _deserialize_graph_rollout_games(result)
+                if worker_transport == "plain"
+                else result
+            )
     return games
 
 
@@ -495,7 +518,8 @@ def _collect_graph_worker(
     reward_mode: str,
     training_mode: str,
     miners_only_actions: str,
-) -> list[GraphRolloutGame]:
+    worker_transport: str,
+) -> list[GraphRolloutGame] | list[dict[str, object]]:
     torch.set_num_threads(torch_threads)
     if hasattr(torch, "set_num_interop_threads"):
         torch.set_num_interop_threads(1)
@@ -510,7 +534,7 @@ def _collect_graph_worker(
     )
     model.load_state_dict(model_state_dict)
     agent = GraphNeuralAgent(model, device="cpu", deterministic=False)
-    return collect_graph_rollouts(
+    rollouts = collect_graph_rollouts(
         env,
         agent,
         games=games,
@@ -520,6 +544,9 @@ def _collect_graph_worker(
         training_mode=training_mode,
         miners_only_actions=miners_only_actions,
     )
+    if worker_transport == "plain":
+        return _serialize_graph_rollout_games(rollouts)
+    return rollouts
 
 
 def _collect_worker(
@@ -535,7 +562,8 @@ def _collect_worker(
     reward_mode: str,
     training_mode: str,
     miners_only_actions: str,
-) -> list[RolloutGame]:
+    worker_transport: str,
+) -> list[RolloutGame] | list[dict[str, object]]:
     torch.set_num_threads(torch_threads)
     if hasattr(torch, "set_num_interop_threads"):
         torch.set_num_interop_threads(1)
@@ -544,7 +572,7 @@ def _collect_worker(
     model = SaboteurPolicy(ObservationSizes(**obs_sizes), action_size)
     model.load_state_dict(model_state_dict)
     agent = NeuralAgent(model, device="cpu", deterministic=False)
-    return collect_rollouts(
+    rollouts = collect_rollouts(
         env,
         agent,
         games=games,
@@ -555,6 +583,9 @@ def _collect_worker(
         training_mode=training_mode,
         miners_only_actions=miners_only_actions,
     )
+    if worker_transport == "plain":
+        return _serialize_rollout_games(rollouts)
+    return rollouts
 
 
 def _build_policy(num_players: int, seed: int, device: torch.device) -> SaboteurPolicy:
@@ -594,6 +625,207 @@ def _flatten_transitions(games: list[RolloutGame]) -> list[Transition]:
 
 def _flatten_graph_transitions(games: list[GraphRolloutGame]) -> list[GraphTransition]:
     return [transition for game in games for transition in game.transitions]
+
+
+def _serialize_rollout_games(games: list[RolloutGame]) -> list[dict[str, object]]:
+    return [
+        {
+            "transitions": [_serialize_transition(transition) for transition in game.transitions],
+            "outcome": game.outcome,
+            "rewards": game.rewards,
+            "steps": game.steps,
+            "revealed_goals": game.revealed_goals,
+            "public_stone_reaches": game.public_stone_reaches,
+            "gold_reaches": game.gold_reaches,
+        }
+        for game in games
+    ]
+
+
+def _deserialize_rollout_games(payload: list[dict[str, object]]) -> list[RolloutGame]:
+    return [
+        RolloutGame(
+            transitions=[
+                _deserialize_transition(item)
+                for item in _as_list(game["transitions"])
+            ],
+            outcome=str(game["outcome"]),
+            rewards={int(key): float(value) for key, value in dict(game["rewards"]).items()},
+            steps=int(game["steps"]),
+            revealed_goals=int(game["revealed_goals"]),
+            public_stone_reaches=float(game["public_stone_reaches"]),
+            gold_reaches=float(game["gold_reaches"]),
+        )
+        for game in payload
+    ]
+
+
+def _serialize_transition(transition: Transition) -> dict[str, object]:
+    return {
+        "board": transition.board.tolist(),
+        "nonboard": transition.nonboard.tolist(),
+        "actions": transition.actions.tolist(),
+        "action_index": transition.action_index,
+        "old_log_prob": transition.old_log_prob,
+        "value": transition.value,
+        "entropy": transition.entropy,
+        "player_id": transition.player_id,
+        "role": transition.role,
+        "action_type": transition.action_type,
+        "reachable_tiles": transition.reachable_tiles,
+        "frontier_empty_cells": transition.frontier_empty_cells,
+        "min_distance_to_goal": transition.min_distance_to_goal,
+        "private_goal_knowledge_count": transition.private_goal_knowledge_count,
+        "reward": transition.reward,
+        "terminal_reward": transition.terminal_reward,
+        "shaping_reward": transition.shaping_reward,
+        "done": transition.done,
+    }
+
+
+def _deserialize_transition(data: object) -> Transition:
+    item = dict(data)
+    return Transition(
+        board=torch.tensor(item["board"], dtype=torch.float32),
+        nonboard=torch.tensor(item["nonboard"], dtype=torch.float32),
+        actions=torch.tensor(item["actions"], dtype=torch.float32),
+        action_index=int(item["action_index"]),
+        old_log_prob=float(item["old_log_prob"]),
+        value=float(item["value"]),
+        entropy=float(item["entropy"]),
+        player_id=int(item["player_id"]),
+        role=str(item["role"]),
+        action_type=str(item["action_type"]),
+        reachable_tiles=float(item["reachable_tiles"]),
+        frontier_empty_cells=float(item["frontier_empty_cells"]),
+        min_distance_to_goal=float(item["min_distance_to_goal"]),
+        private_goal_knowledge_count=float(item["private_goal_knowledge_count"]),
+        reward=float(item["reward"]),
+        terminal_reward=float(item["terminal_reward"]),
+        shaping_reward=float(item["shaping_reward"]),
+        done=bool(item["done"]),
+    )
+
+
+def _serialize_graph_rollout_games(games: list[GraphRolloutGame]) -> list[dict[str, object]]:
+    return [
+        {
+            "transitions": [_serialize_graph_transition(transition) for transition in game.transitions],
+            "outcome": game.outcome,
+            "rewards": game.rewards,
+            "steps": game.steps,
+            "revealed_goals": game.revealed_goals,
+            "public_stone_reaches": game.public_stone_reaches,
+            "gold_reaches": game.gold_reaches,
+        }
+        for game in games
+    ]
+
+
+def _deserialize_graph_rollout_games(payload: list[dict[str, object]]) -> list[GraphRolloutGame]:
+    return [
+        GraphRolloutGame(
+            transitions=[
+                _deserialize_graph_transition(item)
+                for item in _as_list(game["transitions"])
+            ],
+            outcome=str(game["outcome"]),
+            rewards={int(key): float(value) for key, value in dict(game["rewards"]).items()},
+            steps=int(game["steps"]),
+            revealed_goals=int(game["revealed_goals"]),
+            public_stone_reaches=float(game["public_stone_reaches"]),
+            gold_reaches=float(game["gold_reaches"]),
+        )
+        for game in payload
+    ]
+
+
+def _serialize_graph_transition(transition: GraphTransition) -> dict[str, object]:
+    return {
+        "graph": _serialize_graph_tensors(transition.graph),
+        "action_index": transition.action_index,
+        "old_log_prob": transition.old_log_prob,
+        "value": transition.value,
+        "entropy": transition.entropy,
+        "player_id": transition.player_id,
+        "role": transition.role,
+        "action_type": transition.action_type,
+        "reachable_tiles": transition.reachable_tiles,
+        "frontier_empty_cells": transition.frontier_empty_cells,
+        "min_distance_to_goal": transition.min_distance_to_goal,
+        "private_goal_knowledge_count": transition.private_goal_knowledge_count,
+        "reward": transition.reward,
+        "terminal_reward": transition.terminal_reward,
+        "shaping_reward": transition.shaping_reward,
+        "done": transition.done,
+    }
+
+
+def _deserialize_graph_transition(data: object) -> GraphTransition:
+    item = dict(data)
+    return GraphTransition(
+        graph=_deserialize_graph_tensors(item["graph"]),
+        action_index=int(item["action_index"]),
+        old_log_prob=float(item["old_log_prob"]),
+        value=float(item["value"]),
+        entropy=float(item["entropy"]),
+        player_id=int(item["player_id"]),
+        role=str(item["role"]),
+        action_type=str(item["action_type"]),
+        reachable_tiles=float(item["reachable_tiles"]),
+        frontier_empty_cells=float(item["frontier_empty_cells"]),
+        min_distance_to_goal=float(item["min_distance_to_goal"]),
+        private_goal_knowledge_count=float(item["private_goal_knowledge_count"]),
+        reward=float(item["reward"]),
+        terminal_reward=float(item["terminal_reward"]),
+        shaping_reward=float(item["shaping_reward"]),
+        done=bool(item["done"]),
+    )
+
+
+def _serialize_graph_tensors(graph: GraphTensors) -> dict[str, object]:
+    return {
+        "x": graph.x.tolist(),
+        "node_type": graph.node_type.tolist(),
+        "edge_index": graph.edge_index.tolist(),
+        "edge_type": graph.edge_type.tolist(),
+        "action_node_indices": graph.action_node_indices.tolist(),
+        "global_node_index": graph.global_node_index.tolist(),
+        "player_node_indices": graph.player_node_indices.tolist(),
+        "goal_node_indices": graph.goal_node_indices.tolist(),
+        "role_labels": None if graph.role_labels is None else graph.role_labels.tolist(),
+        "goal_labels": None if graph.goal_labels is None else graph.goal_labels.tolist(),
+    }
+
+
+def _deserialize_graph_tensors(data: object) -> GraphTensors:
+    item = dict(data)
+    return GraphTensors(
+        x=torch.tensor(item["x"], dtype=torch.float32),
+        node_type=torch.tensor(item["node_type"], dtype=torch.long),
+        edge_index=torch.tensor(item["edge_index"], dtype=torch.long),
+        edge_type=torch.tensor(item["edge_type"], dtype=torch.long),
+        action_node_indices=torch.tensor(item["action_node_indices"], dtype=torch.long),
+        global_node_index=torch.tensor(item["global_node_index"], dtype=torch.long),
+        player_node_indices=torch.tensor(item["player_node_indices"], dtype=torch.long),
+        goal_node_indices=torch.tensor(item["goal_node_indices"], dtype=torch.long),
+        role_labels=(
+            None
+            if item["role_labels"] is None
+            else torch.tensor(item["role_labels"], dtype=torch.float32)
+        ),
+        goal_labels=(
+            None
+            if item["goal_labels"] is None
+            else torch.tensor(item["goal_labels"], dtype=torch.float32)
+        ),
+    )
+
+
+def _as_list(value: object) -> list[object]:
+    if not isinstance(value, list):
+        raise TypeError(f"Expected list payload, got {type(value).__name__}")
+    return value
 
 
 def _rollout_metrics(

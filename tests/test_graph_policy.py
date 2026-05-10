@@ -2,7 +2,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from scripts.train_ppo import main as train_ppo_main
+from scripts.train_ppo import (
+    _deserialize_graph_rollout_games,
+    _serialize_graph_rollout_games,
+    main as train_ppo_main,
+)
 from saboter.agents.graph_neural_agent import GraphNeuralAgent
 from saboter.env import SaboteurEnv
 from saboter.graph_encoding import (
@@ -92,6 +96,12 @@ def test_graph_agent_rollout_and_ppo_update_are_finite():
 
     game = collect_graph_game_rollout(env, agent, seed=803, max_steps=200)
     assert game.transitions
+    serialized = _serialize_graph_rollout_games([game])
+    assert not _contains_tensor(serialized)
+    round_tripped = _deserialize_graph_rollout_games(serialized)
+    assert len(round_tripped) == 1
+    assert len(round_tripped[0].transitions) == len(game.transitions)
+    assert round_tripped[0].transitions[0].graph.x.device.type == "cpu"
     for transition in game.transitions:
         assert transition.graph.x.device.type == "cpu"
         assert transition.graph.role_labels is not None
@@ -109,6 +119,16 @@ def test_graph_agent_rollout_and_ppo_update_are_finite():
     assert metrics.updates > 0
     assert metrics.role_belief_loss >= 0.0
     assert metrics.goal_belief_loss >= 0.0
+
+
+def _contains_tensor(value: object) -> bool:
+    if isinstance(value, torch.Tensor):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_tensor(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_tensor(item) for item in value)
+    return False
 
 
 def test_train_ppo_graph_script_runs_one_iteration_and_saves_checkpoint(tmp_path, capsys):
