@@ -6,6 +6,7 @@ from scripts.smoke_test_neural_agent import main as neural_smoke_main
 from scripts.collect_rollouts_smoke import main as rollout_smoke_main
 from scripts.train_ppo import (
     _split_games,
+    _prune_checkpoints,
     evaluate_miners_only,
     evaluate_vs_legal_random,
     main as train_ppo_main,
@@ -377,3 +378,18 @@ def test_evaluate_miners_only_reports_progress_metrics():
 def test_split_games_distributes_work_across_workers():
     assert _split_games(8, 3) == [3, 3, 2]
     assert _split_games(2, 8) == [1, 1]
+
+
+def test_prune_checkpoints_keeps_latest_n(tmp_path):
+    for iteration in range(1, 8):
+        (tmp_path / f"checkpoint_{iteration:04d}.pt").write_text("x", encoding="utf-8")
+
+    _prune_checkpoints(tmp_path, 5)
+
+    assert [path.name for path in sorted(tmp_path.glob("checkpoint_*.pt"))] == [
+        "checkpoint_0003.pt",
+        "checkpoint_0004.pt",
+        "checkpoint_0005.pt",
+        "checkpoint_0006.pt",
+        "checkpoint_0007.pt",
+    ]

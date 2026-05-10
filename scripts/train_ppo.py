@@ -76,6 +76,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--eval-neural-counts", type=int, nargs="+", default=[1])
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--checkpoint-every", type=int, default=1)
+    parser.add_argument(
+        "--keep-checkpoints",
+        type=int,
+        default=0,
+        help="Keep only the latest N checkpoints in --save-dir. Use 0 to keep all.",
+    )
     parser.add_argument("--load-checkpoint", type=Path, default=None)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--graph-layers", type=int, default=3)
@@ -217,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 iteration=iteration,
                 config=vars(args),
             )
+            _prune_checkpoints(args.save_dir, args.keep_checkpoints)
 
         print(
             _format_metrics(
@@ -965,6 +972,8 @@ def _validate_args(args: argparse.Namespace) -> None:
     for neural_count in args.eval_neural_counts:
         if not 1 <= neural_count <= args.players:
             raise ValueError("--eval-neural-counts values must be in 1..players")
+    if args.keep_checkpoints < 0:
+        raise ValueError("--keep-checkpoints must be non-negative")
     if args.gamma < 0.0 or args.gamma > 1.0:
         raise ValueError("--gamma must be in [0, 1]")
     if args.games_per_worker is not None and args.games_per_worker <= 0:
@@ -982,6 +991,15 @@ def _split_games(total_games: int, num_workers: int) -> list[int]:
     base = total_games // worker_count
     remainder = total_games % worker_count
     return [base + (1 if index < remainder else 0) for index in range(worker_count)]
+
+
+def _prune_checkpoints(save_dir: Path, keep_count: int) -> None:
+    if keep_count <= 0:
+        return
+    checkpoints = sorted(save_dir.glob("checkpoint_*.pt"))
+    stale = checkpoints[:-keep_count]
+    for checkpoint in stale:
+        checkpoint.unlink()
 
 
 if __name__ == "__main__":
