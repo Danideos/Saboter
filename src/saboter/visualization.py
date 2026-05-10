@@ -313,6 +313,19 @@ def render_html_game(result: object) -> str:
     .has-e .edge.e,
     .has-s .edge.s,
     .has-w .edge.w {{ display: block; }}
+    .tunnels {{
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }}
+    .tunnel {{
+      stroke: var(--path);
+      stroke-width: 7;
+      stroke-linecap: round;
+      fill: none;
+    }}
     .center {{
       z-index: 1;
       width: 28px;
@@ -488,24 +501,17 @@ def render_html_game(result: object) -> str:
         div.className = "tile empty";
         return div;
       }}
-      const edges = rotatedEdges((tile.card || {{}}).edges || [], tile.rotation || 0);
+      const groups = tileGroups(tile);
       const center = tileCenter(tile);
       div.className = [
         "tile",
         tile.kind,
         tile.kind === "goal" && !tile.revealed ? "hidden" : "",
         tile.goal_kind || "",
-        edges.has("n") ? "has-n" : "",
-        edges.has("e") ? "has-e" : "",
-        edges.has("s") ? "has-s" : "",
-        edges.has("w") ? "has-w" : "",
       ].filter(Boolean).join(" ");
       div.title = tileTitle(tile);
       div.innerHTML = `
-        <span class="edge n"></span>
-        <span class="edge e"></span>
-        <span class="edge s"></span>
-        <span class="edge w"></span>
+        ${{renderTunnels(groups)}}
         <span class="center">${{center}}</span>
       `;
       return div;
@@ -527,7 +533,7 @@ def render_html_game(result: object) -> str:
       if (tile.kind === "goal" && !tile.revealed) return "?";
       if (tile.goal_kind === "gold") return "$";
       if (tile.goal_kind === "stone") return "X";
-      return "+";
+      return hasDeadOrSplitGroups(tileGroups(tile)) ? "x" : "+";
     }}
 
     function tileTitle(tile) {{
@@ -541,8 +547,57 @@ def render_html_game(result: object) -> str:
       const edges = [...rotatedEdges(card.edges || [], tile.rotation || 0)]
         .map(edge => edge.toUpperCase())
         .join("");
-      const groups = (card.groups || []).map(group => `[${{group.join("")}}]`).join(" ");
+      const groups = tileGroups(tile)
+        .map(group => `[${{group.map(edge => edge.toUpperCase()).join("")}}]`)
+        .join(" ");
       return `${{coord}} ${{card.id || tile.kind}} r${{tile.rotation || 0}} edges:${{edges}} groups:${{groups}}`;
+    }}
+
+    function tileGroups(tile) {{
+      const card = tile.card || {{}};
+      const rotation = tile.rotation || 0;
+      if (Array.isArray(card.groups) && card.groups.length) {{
+        return rotatedGroups(card.groups, rotation);
+      }}
+      const edges = [...rotatedEdges(card.edges || [], rotation)];
+      return edges.length ? [edges] : [];
+    }}
+
+    function rotatedGroups(groups, rotation) {{
+      return groups
+        .map(group => group
+          .map(edge => rotateEdge(String(edge).toLowerCase(), rotation))
+          .filter(Boolean)
+        )
+        .filter(group => group.length);
+    }}
+
+    function rotateEdge(edge, rotation) {{
+      const normalized = ((rotation % 360) + 360) % 360;
+      if (normalized !== 180) return ["n", "e", "s", "w"].includes(edge) ? edge : null;
+      const opposite = {{n: "s", e: "w", s: "n", w: "e"}};
+      return opposite[edge] || null;
+    }}
+
+    function renderTunnels(groups) {{
+      if (!groups.length) return "";
+      const side = {{n: [29, 0], e: [58, 29], s: [29, 58], w: [0, 29]}};
+      const stub = {{n: [29, 18], e: [40, 29], s: [29, 40], w: [18, 29]}};
+      const center = [29, 29];
+      const lines = [];
+      groups.forEach(group => {{
+        const target = group.length === 1 ? stub[group[0]] : center;
+        group.forEach(edge => {{
+          const start = side[edge];
+          if (!start || !target) return;
+          lines.push(`<line class="tunnel" x1="${{start[0]}}" y1="${{start[1]}}" x2="${{target[0]}}" y2="${{target[1]}}"></line>`);
+        }});
+      }});
+      return `<svg class="tunnels" viewBox="0 0 58 58" aria-hidden="true">${{lines.join("")}}</svg>`;
+    }}
+
+    function hasDeadOrSplitGroups(groups) {{
+      return groups.length > 1 || groups.some(group => group.length === 1);
     }}
 
     function rotatedEdges(edges, rotation) {{
@@ -630,6 +685,9 @@ def _tile_center(tile: dict[str, object]) -> str:
         if goal_kind == "stone":
             return "X"
         return "?"
+    groups = _tile_groups(tile)
+    if len(groups) > 1 or any(len(group) == 1 for group in groups):
+        return "x"
     return "+"
 
 
@@ -646,6 +704,29 @@ def _tile_edges(tile: dict[str, object]) -> set[str]:
         {edge for edge in edges if isinstance(edge, str)},
         normalized_rotation,
     )
+
+
+def _tile_groups(tile: dict[str, object]) -> list[set[str]]:
+    card = tile.get("card")
+    if not isinstance(card, dict):
+        return []
+    rotation = tile.get("rotation", 0)
+    normalized_rotation = rotation if isinstance(rotation, int) else 0
+    raw_groups = card.get("groups")
+    if isinstance(raw_groups, list) and raw_groups:
+        groups: list[set[str]] = []
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, list):
+                continue
+            group = _rotate_edge_names(
+                {edge for edge in raw_group if isinstance(edge, str)},
+                normalized_rotation,
+            )
+            if group:
+                groups.append(group)
+        return groups
+    edges = _tile_edges(tile)
+    return [edges] if edges else []
 
 
 def _player(value: object) -> str:

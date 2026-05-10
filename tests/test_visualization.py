@@ -71,6 +71,29 @@ def test_render_board_applies_card_rotation():
     assert lines[3].strip() == ""
 
 
+def test_render_board_marks_dead_and_split_path_cards():
+    rendered = render_board(
+        [
+            {
+                "x": 0,
+                "y": 0,
+                "kind": "path",
+                "rotation": 0,
+                "revealed": True,
+                "card": {
+                    "id": "dead_ns_split",
+                    "edges": ["N", "S"],
+                    "groups": [["N"], ["S"]],
+                },
+            }
+        ]
+    )
+
+    board_body = "\n".join(rendered.splitlines()[1:])
+    assert "x" in board_body
+    assert "+" not in board_body
+
+
 def test_render_game_includes_summary_events_and_final_board():
     result = play_game(["role-aware"], num_players=3, seed=501)
 
@@ -121,6 +144,7 @@ def test_render_html_game_contains_slider_payload_and_board_script(tmp_path):
     assert 'id="replay-data"' in html
     assert "Saboteur Replay" in html
     assert "snapshots" in html
+    assert "renderTunnels" in html
 
     path = tmp_path / "replay.html"
     save_html_replay(path, result)
