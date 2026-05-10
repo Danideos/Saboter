@@ -15,7 +15,29 @@ START_CARD = {
     "edges": ["E", "N", "S", "W"],
     "groups": [["E", "N", "S", "W"]],
 }
-GOAL_EDGES = ["E", "N", "S", "W"]
+GOAL_CARD_FALLBACKS = {
+    "gold": {
+        "id": "goal_gold",
+        "type": "goal",
+        "edges": ["E", "N", "S", "W"],
+        "groups": [["E", "N", "S", "W"]],
+        "goal_kind": "gold",
+    },
+    "stone_ne": {
+        "id": "goal_stone_ne",
+        "type": "goal",
+        "edges": ["E", "N"],
+        "groups": [["E", "N"]],
+        "goal_kind": "stone",
+    },
+    "stone_nw": {
+        "id": "goal_stone_nw",
+        "type": "goal",
+        "edges": ["N", "W"],
+        "groups": [["N", "W"]],
+        "goal_kind": "stone",
+    },
+}
 
 
 def render_board(board_tiles: Iterable[dict[str, object]]) -> str:
@@ -818,22 +840,19 @@ def _apply_public_event(
         goal_kind = event.get("revealed_goal_kind")
         if isinstance(goal_index, int) and goal_index in range(len(GOAL_COORDS)):
             x, y = GOAL_COORDS[goal_index]
+            card = event.get("card")
+            if not isinstance(card, dict):
+                card = dict(GOAL_CARD_FALLBACKS["gold" if goal_kind == "gold" else "stone_ne"])
             board[(x, y)] = {
                 "x": x,
                 "y": y,
                 "kind": "goal",
                 "goal_index": goal_index,
-                "rotation": 0,
+                "rotation": event.get("rotation", 0),
                 "revealed": True,
                 "reachable": True,
                 "goal_kind": goal_kind,
-                "card": {
-                    "id": f"goal_{goal_kind}",
-                    "type": "goal",
-                    "edges": list(GOAL_EDGES),
-                    "groups": [list(GOAL_EDGES)],
-                    "goal_kind": goal_kind,
-                },
+                "card": card,
             }
 
 

@@ -134,6 +134,32 @@ def test_public_board_snapshots_track_path_reveal_and_rockfall_events():
     assert not any(tile["x"] == 1 and tile["y"] == 0 for tile in snapshots[3])
 
 
+def test_public_board_snapshots_use_revealed_goal_card_geometry():
+    game = {
+        "history": [
+            {
+                "actor": 1,
+                "action_type": "reveal_goal",
+                "goal_index": 0,
+                "revealed_goal_kind": "stone",
+                "card": {
+                    "id": "goal_stone_nw",
+                    "type": "goal",
+                    "edges": ["N", "W"],
+                    "groups": [["N", "W"]],
+                    "goal_kind": "stone",
+                },
+            }
+        ]
+    }
+
+    snapshots = build_public_board_snapshots(game)
+    goal = next(tile for tile in snapshots[1] if tile.get("goal_index") == 0)
+
+    assert goal["card"]["id"] == "goal_stone_nw"
+    assert goal["card"]["edges"] == ["N", "W"]
+
+
 def test_render_html_game_contains_slider_payload_and_board_script(tmp_path):
     result = play_game(["role-aware"], num_players=3, seed=502)
 

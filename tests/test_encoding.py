@@ -7,8 +7,18 @@ from saboter.action_encoding import (
 )
 from saboter.actions import Discard, MapGoal, PlayPath, RepairTool, Rockfall, SabotageTool
 from saboter.agents import LegalRandomAgent
-from saboter.board import GOAL_COORDS
-from saboter.cards import CardType, GoalKind, Role, Tool, action_card, path_card_by_id
+from saboter.board import GOAL_COORDS, Board
+from saboter.cards import (
+    CardType,
+    GOAL_GOLD_CARD,
+    GOAL_STONE_NE_CARD,
+    GOAL_STONE_NW_CARD,
+    GoalKind,
+    Role,
+    Tool,
+    action_card,
+    path_card_by_id,
+)
 from saboter.env import PublicEvent
 from saboter.observation import (
     BOARD_CHANNEL_NAMES,
@@ -136,20 +146,30 @@ def test_hidden_goals_do_not_leak_public_kind_even_if_observation_is_malformed()
 def test_start_and_revealed_goal_geometry_are_encoded():
     env = SaboteurEnv(num_players=5)
     env.reset(seed=613)
+    env.board = Board([GOAL_GOLD_CARD, GOAL_STONE_NE_CARD, GOAL_STONE_NW_CARD])
     env.board.reveal_goal(0)
+    env.board.reveal_goal(1)
 
     board = encode_board_tensor(env.observe(0), [])
     start_row = 0 - BOARD_MIN_Y
     start_col = 0 - BOARD_MIN_X
-    goal_x, goal_y = GOAL_COORDS[0]
-    goal_row = goal_y - BOARD_MIN_Y
-    goal_col = goal_x - BOARD_MIN_X
+    gold_x, gold_y = GOAL_COORDS[0]
+    gold_row = gold_y - BOARD_MIN_Y
+    gold_col = gold_x - BOARD_MIN_X
+    stone_x, stone_y = GOAL_COORDS[1]
+    stone_row = stone_y - BOARD_MIN_Y
+    stone_col = stone_x - BOARD_MIN_X
 
     for direction in ("N", "E", "S", "W"):
         assert board[BOARD_CHANNEL_NAMES.index(f"has_{direction}")][start_row][start_col] == 1.0
-        assert board[BOARD_CHANNEL_NAMES.index(f"has_{direction}")][goal_row][goal_col] == 1.0
+        assert board[BOARD_CHANNEL_NAMES.index(f"has_{direction}")][gold_row][gold_col] == 1.0
     assert board[BOARD_CHANNEL_NAMES.index("connects_N_E")][start_row][start_col] == 1.0
-    assert board[BOARD_CHANNEL_NAMES.index("connects_S_W")][goal_row][goal_col] == 1.0
+    assert board[BOARD_CHANNEL_NAMES.index("connects_S_W")][gold_row][gold_col] == 1.0
+    assert board[BOARD_CHANNEL_NAMES.index("has_N")][stone_row][stone_col] == 1.0
+    assert board[BOARD_CHANNEL_NAMES.index("has_E")][stone_row][stone_col] == 1.0
+    assert board[BOARD_CHANNEL_NAMES.index("has_S")][stone_row][stone_col] == 0.0
+    assert board[BOARD_CHANNEL_NAMES.index("has_W")][stone_row][stone_col] == 0.0
+    assert board[BOARD_CHANNEL_NAMES.index("connects_N_E")][stone_row][stone_col] == 1.0
 
 
 def test_board_encoder_treats_missing_rotation_as_zero():

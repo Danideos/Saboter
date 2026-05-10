@@ -95,7 +95,7 @@ class Board:
 
         edges = card.rotated_edges(rotation)
         for direction, _neighbor_coord, neighbor in adjacent_tiles:
-            if neighbor.is_goal:
+            if neighbor.is_goal and not neighbor.revealed:
                 continue
             neighbor_has_edge = OPPOSITE[direction] in neighbor.edges()
             if (direction in edges) != neighbor_has_edge:
@@ -114,8 +114,10 @@ class Board:
     def reveal_reached_goals_from(self, coord: Coord) -> list[int]:
         reached = self.reachable_goal_indices()
         revealed: list[int] = []
-        for _direction, neighbor_coord, neighbor in self.neighbors(coord):
+        for direction, neighbor_coord, neighbor in self.neighbors(coord):
             if neighbor.is_goal and not neighbor.revealed and neighbor.goal_index in reached:
+                required_edge = OPPOSITE[direction]
+                neighbor.rotation = self._revealed_goal_rotation(neighbor_coord, neighbor, required_edge)
                 neighbor.revealed = True
                 revealed.append(neighbor.goal_index)
         return revealed
@@ -136,6 +138,36 @@ class Board:
 
     def removable_path_coords(self) -> list[Coord]:
         return sorted(coord for coord, tile in self.tiles.items() if tile.is_removable_path)
+
+    def _revealed_goal_rotation(
+        self,
+        coord: Coord,
+        goal: Tile,
+        required_edge: Direction,
+    ) -> int:
+        for rotation in (0, 180):
+            edges = goal.card.rotated_edges(rotation)
+            if required_edge not in edges:
+                continue
+            if self._goal_rotation_matches_revealed_neighbors(coord, edges):
+                return rotation
+        for rotation in (0, 180):
+            if required_edge in goal.card.rotated_edges(rotation):
+                return rotation
+        return 0
+
+    def _goal_rotation_matches_revealed_neighbors(
+        self,
+        coord: Coord,
+        goal_edges: frozenset[Direction],
+    ) -> bool:
+        for direction, _neighbor_coord, neighbor in self.neighbors(coord):
+            if neighbor.is_goal and not neighbor.revealed:
+                continue
+            neighbor_has_edge = OPPOSITE[direction] in neighbor.edges()
+            if (direction in goal_edges) != neighbor_has_edge:
+                return False
+        return True
 
     def reachable_path_coords(self) -> set[Coord]:
         return {
@@ -159,6 +191,8 @@ class Board:
         while frontier:
             coord, group_index = frontier.pop()
             tile = self.tiles[coord]
+            if tile.is_goal and not tile.revealed:
+                continue
             group = tile.groups()[group_index]
             for direction in group:
                 delta = DIRECTION_DELTAS[direction]
@@ -166,7 +200,7 @@ class Board:
                 neighbor = self.tiles.get(neighbor_coord)
                 if neighbor is None:
                     continue
-                if neighbor.is_goal:
+                if neighbor.is_goal and not neighbor.revealed:
                     for neighbor_group_index, _neighbor_group in enumerate(neighbor.groups()):
                         node = (neighbor_coord, neighbor_group_index)
                         if node not in reached:
@@ -225,4 +259,3 @@ class Board:
                 item["card"] = tile.card.public_dict()
             result.append(item)
         return result
-

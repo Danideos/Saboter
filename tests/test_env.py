@@ -6,7 +6,8 @@ from saboter.board import Board
 from saboter.cards import (
     CardType,
     GOAL_GOLD_CARD,
-    GOAL_STONE_CARD,
+    GOAL_STONE_NE_CARD,
+    GOAL_STONE_NW_CARD,
     Role,
     Tool,
     action_card,
@@ -164,7 +165,7 @@ def test_discard_hides_card_identity_in_public_history_and_discard_pile():
 def test_goal_reveal_to_gold_ends_round_with_miner_rewards():
     env = SaboteurEnv(num_players=3)
     env.reset(seed=16)
-    env.board = Board([GOAL_STONE_CARD, GOAL_GOLD_CARD, GOAL_STONE_CARD])
+    env.board = Board([GOAL_STONE_NE_CARD, GOAL_GOLD_CARD, GOAL_STONE_NW_CARD])
     env.players[0].role = Role.MINER
     env.players[1].role = Role.SABOTEUR
     env.players[2].role = Role.MINER
@@ -183,6 +184,7 @@ def test_goal_reveal_to_gold_ends_round_with_miner_rewards():
     }
     assert goal_tiles[1]["revealed"]
     assert goal_tiles[1]["goal_kind"] == "gold"
+    assert goal_tiles[1]["card"]["id"] == "goal_gold"
     assert goal_tiles[0]["goal_kind"] is None
 
 
@@ -218,7 +220,7 @@ def test_rockfall_removes_path_card_and_recomputes_reachability():
     env = SaboteurEnv(num_players=3)
     env.reset(seed=19)
     path_ew = path_card_by_id("path_ew")
-    env.board = Board([GOAL_STONE_CARD, GOAL_GOLD_CARD, GOAL_STONE_CARD])
+    env.board = Board([GOAL_STONE_NE_CARD, GOAL_GOLD_CARD, GOAL_STONE_NW_CARD])
     env.board.place_path(path_ew, (1, 0), 0)
     env.board.place_path(path_ew, (2, 0), 0)
     set_current_hand(env, action_card(CardType.ROCKFALL))
@@ -229,6 +231,27 @@ def test_rockfall_removes_path_card_and_recomputes_reachability():
     assert env.board.tile_at((1, 0)) is None
     assert (2, 0) not in env.board.reachable_path_coords()
     assert env.observe(1)["history"][-1]["removed_card"]["id"] == "path_ew"
+
+
+def test_revealed_stone_goal_history_includes_real_card_geometry():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=122)
+    env.board = Board([GOAL_STONE_NW_CARD, GOAL_GOLD_CARD, GOAL_STONE_NE_CARD])
+    path_ew = path_card_by_id("path_ew")
+    env.board.place_path(path_card_by_id("path_new"), (1, 0), 0)
+    env.board.place_path(path_card_by_id("path_ns"), (1, -1), 0)
+    env.board.place_path(path_card_by_id("path_es"), (1, -2), 0)
+    for x in range(2, 7):
+        env.board.place_path(path_ew, (x, -2), 0)
+    set_current_hand(env, path_ew)
+
+    env.step(PlayPath(0, 7, -2, 0))
+
+    reveal_event = env.observe(1)["history"][-1]
+    assert reveal_event["action_type"] == "reveal_goal"
+    assert reveal_event["revealed_goal_kind"] == "stone"
+    assert reveal_event["card"]["id"] == "goal_stone_nw"
+    assert reveal_event["card"]["edges"] == ["N", "W"]
 
 
 def test_random_agent_soak_games_complete_without_illegal_actions(pytestconfig):

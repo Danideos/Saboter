@@ -132,13 +132,26 @@ GOAL_GOLD_CARD = Card(
     goal_kind=GoalKind.GOLD,
 )
 
-GOAL_STONE_CARD = Card(
-    "goal_stone",
+GOAL_STONE_NE_CARD = Card(
+    "goal_stone_ne",
     CardType.GOAL,
-    edges=frozenset(Direction),
-    groups=(frozenset(Direction),),
+    edges=frozenset((Direction.NORTH, Direction.EAST)),
+    groups=(frozenset((Direction.NORTH, Direction.EAST)),),
     goal_kind=GoalKind.STONE,
 )
+
+GOAL_STONE_NW_CARD = Card(
+    "goal_stone_nw",
+    CardType.GOAL,
+    edges=frozenset((Direction.NORTH, Direction.WEST)),
+    groups=(frozenset((Direction.NORTH, Direction.WEST)),),
+    goal_kind=GoalKind.STONE,
+)
+
+GOAL_STONE_CARDS = (GOAL_STONE_NE_CARD, GOAL_STONE_NW_CARD)
+
+# Backward-compatible alias for older tests/scripts that imported one stone card.
+GOAL_STONE_CARD = GOAL_STONE_NE_CARD
 
 
 PATH_CARD_SPECS: tuple[tuple[Card, int], ...] = (
@@ -169,7 +182,10 @@ def path_card_by_id(card_id: str) -> Card:
         return START_CARD
     if card_id == GOAL_GOLD_CARD.id:
         return GOAL_GOLD_CARD
-    if card_id == GOAL_STONE_CARD.id:
+    for goal_card in GOAL_STONE_CARDS:
+        if card_id == goal_card.id:
+            return goal_card
+    if card_id == "goal_stone":
         return GOAL_STONE_CARD
     raise KeyError(card_id)
 
@@ -253,4 +269,3 @@ def hand_size_for_player_count(num_players: int) -> int:
     if 8 <= num_players <= 10:
         return 4
     raise ValueError("Saboteur supports 3 to 10 players")
-

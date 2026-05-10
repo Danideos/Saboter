@@ -21,7 +21,7 @@ from saboter.cards import (
     Card,
     CardType,
     GOAL_GOLD_CARD,
-    GOAL_STONE_CARD,
+    GOAL_STONE_CARDS,
     GoalKind,
     Role,
     Tool,
@@ -107,7 +107,7 @@ class SaboteurEnv:
             dealt_roles = role_pool[: self.num_players]
             self.unused_role = role_pool[self.num_players]
 
-        goal_cards = [GOAL_GOLD_CARD, GOAL_STONE_CARD, GOAL_STONE_CARD]
+        goal_cards = [GOAL_GOLD_CARD, *GOAL_STONE_CARDS]
         self.rng.shuffle(goal_cards)
         self.board = Board(goal_cards)
 
@@ -204,10 +204,15 @@ class SaboteurEnv:
             for goal_index in revealed:
                 goal_tile = self._board().tile_at(GOAL_COORDS[goal_index])
                 goal_kind = goal_tile.card.goal_kind if goal_tile is not None else None
+                goal_x, goal_y = GOAL_COORDS[goal_index]
                 self.history.append(
                     PublicEvent(
                         actor=player_id,
                         action_type="reveal_goal",
+                        card=goal_tile.card.public_dict() if goal_tile is not None else None,
+                        x=goal_x,
+                        y=goal_y,
+                        rotation=goal_tile.rotation if goal_tile is not None else 0,
                         goal_index=goal_index,
                         revealed_goal_kind=goal_kind.value if goal_kind is not None else None,
                     )

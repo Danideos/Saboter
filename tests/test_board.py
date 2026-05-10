@@ -2,11 +2,11 @@ import pytest
 
 from saboter.board import Board
 from saboter.evaluation import play_game
-from saboter.cards import GOAL_GOLD_CARD, GOAL_STONE_CARD, path_card_by_id
+from saboter.cards import GOAL_GOLD_CARD, GOAL_STONE_NE_CARD, GOAL_STONE_NW_CARD, path_card_by_id
 
 
 def make_board() -> Board:
-    return Board([GOAL_STONE_CARD, GOAL_GOLD_CARD, GOAL_STONE_CARD])
+    return Board([GOAL_STONE_NE_CARD, GOAL_GOLD_CARD, GOAL_STONE_NW_CARD])
 
 
 def test_path_placement_requires_matching_edges_and_start_reachability():
@@ -48,6 +48,33 @@ def test_rockfall_cannot_remove_start_or_goal_cards():
         board.remove_path((0, 0))
     with pytest.raises(ValueError):
         board.remove_path((8, 0))
+
+
+def test_revealed_stone_goals_use_actual_corner_geometry():
+    board = make_board()
+    board.reveal_goal(0)
+    board.reveal_goal(2)
+
+    assert board.tile_at((8, -2)).edges() == GOAL_STONE_NE_CARD.edges
+    assert board.tile_at((8, -2)).groups() == GOAL_STONE_NE_CARD.groups
+    assert board.tile_at((8, 2)).edges() == GOAL_STONE_NW_CARD.edges
+    assert board.tile_at((8, 2)).groups() == GOAL_STONE_NW_CARD.groups
+
+
+def test_revealed_stone_goal_rotates_180_to_match_reaching_path():
+    board = Board([GOAL_STONE_NW_CARD, GOAL_GOLD_CARD, GOAL_STONE_NE_CARD])
+    path_ew = path_card_by_id("path_ew")
+    for x in range(1, 7):
+        board.place_path(path_ew, (x, 0), 0)
+    board.place_path(path_card_by_id("path_es"), (7, 0), 180)
+    board.place_path(path_card_by_id("path_es"), (7, -1), 0)
+
+    revealed = board.place_path(path_card_by_id("path_es"), (8, -1), 180)
+
+    assert revealed == [0]
+    goal = board.tile_at((8, -2))
+    assert goal.rotation == 180
+    assert {edge.value for edge in goal.edges()} == {"E", "S"}
 
 
 def test_demo_replay_has_no_mismatched_adjacent_non_goal_edges():
