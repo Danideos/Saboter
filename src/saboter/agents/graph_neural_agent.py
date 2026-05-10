@@ -21,6 +21,8 @@ class GraphActionInfo:
     value: float
     entropy: float
     action_scores: list[float]
+    role_belief_logits: list[float]
+    role_belief_probs: list[float]
 
 
 class GraphNeuralAgent:
@@ -69,15 +71,23 @@ class GraphNeuralAgent:
             output = self.model.score_graph(graph_tensors)
         logits = output.action_logits
         value = output.values
+        role_logits = output.role_logits
         if tuple(logits.shape) != (len(actions),):
             raise RuntimeError(f"Expected graph logits shape {(len(actions),)}, got {tuple(logits.shape)}")
         if tuple(value.shape) != (1,):
             raise RuntimeError(f"Expected graph value shape {(1,)}, got {tuple(value.shape)}")
+        if tuple(role_logits.shape) != (len(graph_features.player_node_indices),):
+            raise RuntimeError(
+                "Expected role belief logits shape "
+                f"{(len(graph_features.player_node_indices),)}, got {tuple(role_logits.shape)}"
+            )
         _check_finite("graph logits", logits)
         _check_finite("graph value", value)
+        _check_finite("graph role logits", role_logits)
 
         log_probs = torch.log_softmax(logits, dim=0)
         probs = log_probs.exp()
+        role_probs = torch.sigmoid(role_logits)
         if self.deterministic:
             action_index = int(torch.argmax(logits).item())
         else:
@@ -90,6 +100,8 @@ class GraphNeuralAgent:
             value=float(value.squeeze(0).item()),
             entropy=float((-(probs * log_probs).sum()).item()),
             action_scores=[float(score) for score in logits.detach().cpu().tolist()],
+            role_belief_logits=[float(score) for score in role_logits.detach().cpu().tolist()],
+            role_belief_probs=[float(score) for score in role_probs.detach().cpu().tolist()],
         )
         return graph_features.actions[action_index], info
 

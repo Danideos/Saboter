@@ -12,10 +12,12 @@ from saboter.agents.random_agent import LegalRandomAgent
 from saboter.env import SaboteurEnv
 from saboter.training.curriculum import filter_actions_for_training_mode
 from saboter.training.graph_tensorize import GraphTensors
+from saboter.training.heuristic_frontier import HeuristicRewardTracker
 from saboter.training.progress_metrics import (
     decision_progress_from_observation,
     game_progress_from_env,
 )
+from saboter.training.reward_shaping import shaping_reward_for_transition
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ def collect_graph_game_rollout(
         env.reset(seed=seed)
 
     random_agent = LegalRandomAgent(seed=seed + 999) if training_mode == "random_saboteurs" else None
+    heuristic_tracker = _build_heuristic_tracker(env, reward_mode)
 
     pending: list[GraphTransition] = []
     steps = 0
@@ -82,6 +85,8 @@ def collect_graph_game_rollout(
         )
         if not legal_actions:
             env.step_known_legal(None)
+            if heuristic_tracker is not None:
+                heuristic_tracker.apply_action(_board_or_raise(env), None)
             steps += 1
             continue
 
@@ -90,10 +95,17 @@ def collect_graph_game_rollout(
         map_available = _has_map_card(observation)
         before_progress = decision_progress_from_observation(observation)
         before_game_progress = game_progress_from_env(env)
+        before_heuristic_goal_distances = (
+            heuristic_tracker.current_goal_distances()
+            if heuristic_tracker is not None
+            else None
+        )
 
         if training_mode == "random_saboteurs" and role == "saboteur":
             action = random_agent.act(env, player_id)
             env.step_known_legal(action)
+            if heuristic_tracker is not None:
+                heuristic_tracker.apply_action(_board_or_raise(env), action)
             steps += 1
             continue
 
@@ -104,19 +116,29 @@ def collect_graph_game_rollout(
             observation=observation,
         )
         env.step_known_legal(action)
+        if heuristic_tracker is not None:
+            heuristic_tracker.apply_action(_board_or_raise(env), action)
 
         after_progress = decision_progress_from_observation(env.observe(player_id))
         after_game_progress = game_progress_from_env(env)
+        after_heuristic_goal_distances = (
+            heuristic_tracker.current_goal_distances()
+            if heuristic_tracker is not None
+            else None
+        )
 
-        shaping_reward = 0.0
-        if reward_mode == "progress" and role == "miner":
-            delta_reachable = after_progress.reachable_tiles - before_progress.reachable_tiles
-            delta_distance = before_progress.min_distance_to_goal - after_progress.min_distance_to_goal
-            delta_stone = after_game_progress.public_stone_reaches - before_game_progress.public_stone_reaches
-
-            shaping_reward += delta_reachable * 0.01
-            shaping_reward += max(0.0, delta_distance) * 0.01
-            shaping_reward += delta_stone * 0.2
+        shaping_reward = shaping_reward_for_transition(
+            env,
+            reward_mode=reward_mode,
+            role=role,
+            action=action,
+            before_progress=before_progress,
+            after_progress=after_progress,
+            before_game_progress=before_game_progress,
+            after_game_progress=after_game_progress,
+            before_heuristic_goal_distances=before_heuristic_goal_distances,
+            after_heuristic_goal_distances=after_heuristic_goal_distances,
+        )
 
         pending.append(
             GraphTransition(
@@ -141,7 +163,7 @@ def collect_graph_game_rollout(
     rewards = env.rewards()
     transitions: list[GraphTransition] = []
     for index, transition in enumerate(pending):
-        terminal_reward = rewards[transition.player_id] if index == len(pending) - 1 else 0.0
+        terminal_reward = rewards[transition.player_id]
         total_reward = terminal_reward + transition.shaping_reward
         transitions.append(
             GraphTransition(
@@ -224,3 +246,18 @@ def _has_map_card(observation: dict[str, object]) -> bool:
     if not isinstance(hand, list):
         return False
     return any(isinstance(card, dict) and card.get("type") == "map" for card in hand)
+
+
+def _build_heuristic_tracker(
+    env: SaboteurEnv,
+    reward_mode: str,
+) -> HeuristicRewardTracker | None:
+    if reward_mode != "heuristic":
+        return None
+    return HeuristicRewardTracker.from_board(_board_or_raise(env))
+
+
+def _board_or_raise(env: SaboteurEnv):
+    if env.board is None:
+        raise RuntimeError("Environment board is unavailable during graph rollout collection")
+    return env.board

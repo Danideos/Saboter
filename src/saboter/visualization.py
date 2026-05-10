@@ -254,6 +254,15 @@ def render_html_game(result: object) -> str:
     .player.miner .player-role {{ color: var(--miner); }}
     .player.saboteur .player-role {{ color: var(--saboteur); }}
     .player.hidden .player-role {{ color: var(--muted); }}
+    .player-belief {{
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .player-observer {{
+      color: var(--focus);
+      font-weight: 700;
+    }}
     .controls {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -388,8 +397,10 @@ def render_html_game(result: object) -> str:
       place-items: center;
     }}
     .event-panel {{
+      --debug-panel-height: 180px;
+      min-height: 0;
       display: grid;
-      grid-template-rows: auto minmax(130px, 240px) minmax(0, 1fr);
+      grid-template-rows: auto minmax(96px, var(--debug-panel-height)) 12px minmax(0, 1fr);
     }}
     .event-current {{
       border-bottom: 1px solid var(--line);
@@ -399,12 +410,38 @@ def render_html_game(result: object) -> str:
     .event-current strong {{ display: block; margin-bottom: 4px; }}
     .event-current span {{ color: var(--muted); }}
     .debug-panel {{
-      border-bottom: 1px solid var(--line);
       padding: 10px 12px;
       overflow: auto;
       display: grid;
       gap: 10px;
       align-content: start;
+    }}
+    .event-resizer {{
+      position: relative;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #f3f6f9;
+      cursor: ns-resize;
+      touch-action: none;
+    }}
+    .event-resizer::before {{
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 44px;
+      height: 4px;
+      border-radius: 999px;
+      background: #b2bdc8;
+      transform: translate(-50%, -50%);
+    }}
+    .event-resizer:focus-visible {{
+      outline: 2px solid var(--focus);
+      outline-offset: -2px;
+    }}
+    body.is-resizing {{
+      cursor: ns-resize;
+      user-select: none;
     }}
     .debug-title {{
       margin: 0 0 4px;
@@ -423,6 +460,37 @@ def render_html_game(result: object) -> str:
     }}
     .hand-row strong,
     .score-row strong {{ font-size: 12px; }}
+    .belief-list {{
+      display: grid;
+      gap: 6px;
+    }}
+    .belief-row {{
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 6px;
+      background: #fbfcfd;
+    }}
+    .belief-meter {{
+      position: relative;
+      height: 8px;
+      border-radius: 999px;
+      background: #e6ebf1;
+      overflow: hidden;
+    }}
+    .belief-fill {{
+      height: 100%;
+      background: linear-gradient(90deg, var(--miner), var(--saboteur));
+    }}
+    .belief-value {{
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }}
     .cards,
     .discard-pile {{
       display: flex;
@@ -652,6 +720,14 @@ def render_html_game(result: object) -> str:
             <span id="eventDetail"></span>
           </div>
           <div class="debug-panel" id="debugPanel"></div>
+          <div
+            class="event-resizer"
+            id="eventResizer"
+            role="separator"
+            aria-label="Resize event details"
+            aria-orientation="horizontal"
+            tabindex="0"
+          ></div>
           <div class="event-list" id="eventList"></div>
         </div>
       </section>
@@ -681,7 +757,14 @@ def render_html_game(result: object) -> str:
     const goalCoords = [[8, -2], [8, 0], [8, 2]];
     const slider = document.getElementById("stepSlider");
     const board = document.getElementById("board");
+    const debugPanel = document.getElementById("debugPanel");
+    const eventPanel = document.querySelector(".event-panel");
+    const eventCurrent = document.querySelector(".event-current");
     const eventList = document.getElementById("eventList");
+    const eventResizer = document.getElementById("eventResizer");
+    const DEBUG_PANEL_STORAGE_KEY = "saboteur-replay-debug-panel-height";
+    const MIN_DEBUG_PANEL_HEIGHT = 96;
+    const MIN_EVENT_LIST_HEIGHT = 120;
     let currentStep = -1;
     let selectedCardSlot = null;
     let selectedRotation = 0;
@@ -701,6 +784,7 @@ def render_html_game(result: object) -> str:
       Object.entries(game.action_counts || {{}}).forEach(([name, count]) => {{
         actions.appendChild(pill(`${{name}} ${{count}}`));
       }});
+      setupEventResizer();
       document.querySelectorAll("[data-overlay-mode]").forEach(button => {{
         button.addEventListener("click", () => {{
           overlayMode = button.dataset.overlayMode || "prob";
@@ -722,6 +806,90 @@ def render_html_game(result: object) -> str:
         eventList.appendChild(row);
       }});
       render(0);
+    }}
+
+    function setupEventResizer() {{
+      const storedHeight = loadStoredDebugPanelHeight();
+      if (storedHeight !== null) {{
+        setDebugPanelHeight(storedHeight);
+      }}
+      eventResizer.addEventListener("pointerdown", startEventResize);
+      eventResizer.addEventListener("keydown", handleEventResizeKeydown);
+      window.addEventListener("resize", () => {{
+        setDebugPanelHeight(debugPanel.getBoundingClientRect().height);
+      }});
+    }}
+
+    function startEventResize(event) {{
+      event.preventDefault();
+      const startY = event.clientY;
+      const startHeight = debugPanel.getBoundingClientRect().height;
+      const pointerId = event.pointerId;
+      eventResizer.setPointerCapture(pointerId);
+      document.body.classList.add("is-resizing");
+
+      const onMove = moveEvent => {{
+        setDebugPanelHeight(startHeight + (moveEvent.clientY - startY));
+      }};
+      const onUp = () => {{
+        document.body.classList.remove("is-resizing");
+        try {{
+          eventResizer.releasePointerCapture(pointerId);
+        }} catch (_error) {{
+        }}
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        persistDebugPanelHeight();
+      }};
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    }}
+
+    function handleEventResizeKeydown(event) {{
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      event.preventDefault();
+      const currentHeight = debugPanel.getBoundingClientRect().height;
+      const delta = event.key === "ArrowUp" ? -24 : 24;
+      setDebugPanelHeight(currentHeight + delta);
+      persistDebugPanelHeight();
+    }}
+
+    function setDebugPanelHeight(height) {{
+      eventPanel.style.setProperty("--debug-panel-height", `${{Math.round(clampDebugPanelHeight(height))}}px`);
+    }}
+
+    function clampDebugPanelHeight(height) {{
+      const panelHeight = eventPanel.getBoundingClientRect().height;
+      const currentHeight = eventCurrent.getBoundingClientRect().height;
+      const resizerHeight = eventResizer.getBoundingClientRect().height || 12;
+      const maxHeight = Math.max(
+        MIN_DEBUG_PANEL_HEIGHT,
+        panelHeight - currentHeight - resizerHeight - MIN_EVENT_LIST_HEIGHT
+      );
+      return Math.max(MIN_DEBUG_PANEL_HEIGHT, Math.min(maxHeight, Number(height) || MIN_DEBUG_PANEL_HEIGHT));
+    }}
+
+    function persistDebugPanelHeight() {{
+      try {{
+        window.localStorage.setItem(
+          DEBUG_PANEL_STORAGE_KEY,
+          String(Math.round(debugPanel.getBoundingClientRect().height))
+        );
+      }} catch (_error) {{
+      }}
+    }}
+
+    function loadStoredDebugPanelHeight() {{
+      try {{
+        const rawValue = window.localStorage.getItem(DEBUG_PANEL_STORAGE_KEY);
+        const parsed = Number(rawValue);
+        return Number.isFinite(parsed) ? parsed : null;
+      }} catch (_error) {{
+        return null;
+      }}
     }}
 
     function render(step) {{
@@ -762,13 +930,23 @@ def render_html_game(result: object) -> str:
 
     function renderPlayers(step) {{
       const players = document.getElementById("players");
-      const targetActions = targetActionMap(debugSteps[step] || null);
+      const debug = debugSteps[step] || null;
+      const targetActions = targetActionMap(debug);
+      const roleBeliefs = roleBeliefMap(debug);
+      const observerId = debug && Number.isInteger(debug.actor) ? debug.actor : null;
       players.replaceChildren();
       game.agent_names.forEach((agent, id) => {{
         const finalRole = game.roles[String(id)] ?? game.roles[id] ?? "?";
         const finalReward = game.rewards[String(id)] ?? game.rewards[id] ?? "?";
         const role = finalRole;
         const reward = finalReward;
+        const belief = roleBeliefs.get(Number(id)) || null;
+        const beliefLine =
+          Number(id) === observerId
+            ? '<div class="player-belief player-observer">observer</div>'
+            : belief
+              ? `<div class="player-belief">seen as ${{formatPercent(belief.saboteur_prob || 0)}} sab</div>`
+              : "";
         const row = document.createElement("div");
         row.className = `player ${{role}}`;
         row.title = `P${{id}} | ${{agent}} | role ${{finalRole}} | reward ${{finalReward}}`;
@@ -777,6 +955,7 @@ def render_html_game(result: object) -> str:
           <div>
             <div class="player-agent">${{escapeText(agent)}}</div>
             <div class="player-role">${{escapeText(role)}}</div>
+            ${{beliefLine}}
           </div>
           <strong>${{reward}}</strong>
         `;
@@ -807,6 +986,29 @@ def render_html_game(result: object) -> str:
       const selected = document.createElement("div");
       selected.innerHTML = `<div class="debug-title">Selected</div>${{escapeText(debug.selected_action?.label || "none")}}${{debug.selected_card ? ` · card: ${{cardName(debug.selected_card)}}` : ""}}`;
       panel.appendChild(selected);
+
+      const beliefs = otherRoleBeliefs(debug);
+      if (beliefs.length) {{
+        const section = document.createElement("div");
+        section.innerHTML = `<div class="debug-title">Role beliefs</div>`;
+        const list = document.createElement("div");
+        list.className = "belief-list";
+        beliefs.forEach(belief => {{
+          const row = document.createElement("div");
+          row.className = "belief-row";
+          row.title = typeof belief.saboteur_logit === "number"
+            ? `raw logit ${{Number(belief.saboteur_logit).toFixed(4)}}`
+            : "";
+          row.innerHTML = `
+            <strong>P${{belief.player_id}}</strong>
+            <div class="belief-meter"><div class="belief-fill" style="width: ${{beliefWidth(belief.saboteur_prob)}}"></div></div>
+            <span class="belief-value">${{formatPercent(belief.saboteur_prob || 0)}} sab</span>
+          `;
+          list.appendChild(row);
+        }});
+        section.appendChild(list);
+        panel.appendChild(section);
+      }}
 
       const discard = document.createElement("div");
       discard.innerHTML = `<div class="debug-title">Discard pile</div>`;
@@ -1130,8 +1332,36 @@ def render_html_game(result: object) -> str:
       return result;
     }}
 
+    function roleBeliefEntries(debug) {{
+      if (!debug || !Array.isArray(debug.role_beliefs)) return [];
+      return debug.role_beliefs.filter(belief =>
+        belief &&
+        Number.isInteger(belief.player_id) &&
+        typeof belief.saboteur_prob === "number"
+      );
+    }}
+
+    function roleBeliefMap(debug) {{
+      const result = new Map();
+      roleBeliefEntries(debug).forEach(belief => {{
+        result.set(Number(belief.player_id), belief);
+      }});
+      return result;
+    }}
+
+    function otherRoleBeliefs(debug) {{
+      return roleBeliefEntries(debug)
+        .filter(belief => !belief.is_self)
+        .sort((left, right) => Number(right.saboteur_prob || 0) - Number(left.saboteur_prob || 0));
+    }}
+
     function coordKey(x, y) {{
       return `${{x}},${{y}}`;
+    }}
+
+    function beliefWidth(value) {{
+      const percent = Math.max(0, Math.min(100, Number(value || 0) * 100));
+      return `${{percent}}%`;
     }}
 
     function formatPercent(value) {{

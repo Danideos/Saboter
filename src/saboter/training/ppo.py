@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from saboter.training.rollout import Transition
-from saboter.training.returns import discounted_returns
+from saboter.training.returns import role_aware_discounted_returns
 
 
 @dataclass(frozen=True)
@@ -51,10 +51,12 @@ def ppo_update(
         raise ValueError("PPO batch_size must be positive")
 
     resolved_device = torch.device(device)
-    returns = discounted_returns(
-        [transition.reward for transition in transitions],
-        [transition.done for transition in transitions],
-        config.gamma,
+    returns = role_aware_discounted_returns(
+        roles=[transition.role for transition in transitions],
+        terminal_rewards=[transition.terminal_reward for transition in transitions],
+        shaping_rewards=[transition.shaping_reward for transition in transitions],
+        dones=[transition.done for transition in transitions],
+        gamma=config.gamma,
     )
     old_values = torch.tensor([transition.value for transition in transitions], dtype=torch.float32)
     old_log_probs = torch.tensor(

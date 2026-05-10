@@ -269,6 +269,7 @@ def _debug_step(
     return {
         **_debug_snapshot(env, actor=actor),
         "controller": controller,
+        "role_beliefs": _role_beliefs(observation, info),
         "selected_action": _action_debug(action, score=None, selected=True),
         "selected_card": selected_card,
         "legal_actions": [
@@ -284,6 +285,39 @@ def _debug_step(
             for index, candidate in enumerate(legal_actions)
         ],
     }
+
+
+def _role_beliefs(
+    observation: dict[str, object],
+    info: object | None,
+) -> list[dict[str, object]]:
+    probs = getattr(info, "role_belief_probs", None)
+    logits = getattr(info, "role_belief_logits", None)
+    if not isinstance(probs, list) or not probs:
+        return []
+
+    observer_id = observation.get("player_id")
+    num_players = observation.get("num_players")
+    if not isinstance(observer_id, int) or not isinstance(num_players, int) or num_players <= 0:
+        return []
+
+    beliefs: list[dict[str, object]] = []
+    for relative_position, prob in enumerate(probs[:num_players]):
+        if not isinstance(prob, (float, int)):
+            continue
+        player_id = (observer_id + relative_position) % num_players
+        entry: dict[str, object] = {
+            "player_id": player_id,
+            "relative_position": relative_position,
+            "is_self": relative_position == 0,
+            "saboteur_prob": float(prob),
+        }
+        if isinstance(logits, list) and relative_position < len(logits):
+            logit = logits[relative_position]
+            if isinstance(logit, (float, int)):
+                entry["saboteur_logit"] = float(logit)
+        beliefs.append(entry)
+    return beliefs
 
 
 def _hands(env: SaboteurEnv) -> dict[int, list[dict[str, object]]]:

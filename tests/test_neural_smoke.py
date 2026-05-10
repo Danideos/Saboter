@@ -16,13 +16,21 @@ from saboter.action_encoding import ACTION_FEATURE_NAMES, encode_actions
 from saboter.actions import Discard, MapGoal, PlayPath, Rockfall, SabotageTool
 from saboter.agents.neural_agent import NeuralAgent
 from saboter.agents.random_agent import LegalRandomAgent
-from saboter.cards import Tool
+from saboter.cards import Role, Tool, path_card_by_id
 from saboter.env import SaboteurEnv
 from saboter.models.policy import SaboteurPolicy
 from saboter.observation import encode_observation
 from saboter.training.curriculum import filter_actions_for_training_mode
+from saboter.training.heuristic_frontier import (
+    HeuristicRewardTracker,
+    frontier_goal_distance_summary,
+    goal_missing_distance,
+    heuristic_path_reward,
+)
+from saboter.training.progress_metrics import DecisionProgress, GameProgress
+from saboter.training.reward_shaping import shaping_reward_for_transition
 from saboter.training.rollout import collect_game_rollout
-from saboter.training.returns import discounted_returns
+from saboter.training.returns import discounted_returns, role_aware_discounted_returns
 from saboter.training.tensorize import tensorize_actions, tensorize_observation
 
 
@@ -210,6 +218,7 @@ def test_collect_game_rollout_assigns_terminal_rewards_and_detached_tensors():
         assert not transition.board.requires_grad
         assert not transition.actions.requires_grad
         assert transition.reward == transition.terminal_reward + transition.shaping_reward
+        assert transition.terminal_reward == game.rewards[transition.player_id]
         assert 0 <= transition.action_index < transition.actions.shape[0]
         assert transition.action_type in {
             "discard",
@@ -220,8 +229,6 @@ def test_collect_game_rollout_assigns_terminal_rewards_and_detached_tensors():
             "rockfall",
         }
     assert game.transitions[-1].done is True
-    assert game.transitions[-1].terminal_reward == game.rewards[game.transitions[-1].player_id]
-    assert all(transition.terminal_reward == 0.0 for transition in game.transitions[:-1])
     assert all(transition.done is False for transition in game.transitions[:-1])
 
 
@@ -236,6 +243,202 @@ def test_discounted_returns_propagate_terminal_reward_with_episode_resets():
         returns,
         torch.tensor([0.25, 0.5, 1.0, 1.0, 2.0]),
     )
+
+
+def test_role_aware_discounted_returns_keep_mixed_role_credit_separate():
+    returns = role_aware_discounted_returns(
+        roles=["miner", "saboteur", "miner", "saboteur"],
+        terminal_rewards=[-1.0, 1.0, -1.0, 1.0],
+        shaping_rewards=[0.0, 0.0, 0.0, 0.0],
+        dones=[False, False, False, True],
+        gamma=1.0,
+    )
+
+    assert torch.allclose(
+        returns,
+        torch.tensor([-1.0, 1.0, -1.0, 1.0]),
+    )
+
+
+def test_sabotage_reward_mode_rewards_cross_team_targets():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=717, force_roles=[Role.MINER, Role.SABOTEUR, Role.MINER])
+    progress = DecisionProgress(0.0, 0.0, 0.0, 0.0)
+    game_progress = GameProgress(0.0, 0.0)
+
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="sabotage",
+        role="miner",
+        action=SabotageTool(0, 1, Tool.PICKAXE),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(0.1)
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="sabotage",
+        role="miner",
+        action=SabotageTool(0, 2, Tool.PICKAXE),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(-0.1)
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="sabotage",
+        role="saboteur",
+        action=SabotageTool(0, 0, Tool.PICKAXE),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(0.1)
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="sabotage",
+        role="saboteur",
+        action=SabotageTool(0, 1, Tool.PICKAXE),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(-0.1)
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="sabotage",
+        role="miner",
+        action=Discard(0),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(0.0)
+
+
+def test_heuristic_reward_mode_keeps_sabotage_target_rewards():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=718, force_roles=[Role.MINER, Role.SABOTEUR, Role.MINER])
+    progress = DecisionProgress(0.0, 0.0, 0.0, 0.0)
+    game_progress = GameProgress(0.0, 0.0)
+
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="heuristic",
+        role="miner",
+        action=SabotageTool(0, 1, Tool.PICKAXE),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(0.1)
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="heuristic",
+        role="saboteur",
+        action=SabotageTool(0, 0, Tool.PICKAXE),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+    ) == pytest.approx(0.1)
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="heuristic",
+        role="miner",
+        action=Discard(0),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=game_progress,
+        after_game_progress=game_progress,
+        before_heuristic_goal_distances=(5.0, 5.0, 5.0),
+        after_heuristic_goal_distances=(4.0, 4.0, 4.0),
+    ) == pytest.approx(0.0)
+
+
+def test_heuristic_path_reward_gives_point_zero_seven_five_for_three_goal_progress():
+    before = frontier_goal_distance_summary({(3, 0)})
+    after = frontier_goal_distance_summary({(4, 0)})
+
+    assert before == pytest.approx((5.0, 5.0, 5.0))
+    assert after == pytest.approx((4.0, 4.0, 4.0))
+    assert heuristic_path_reward(before, after) == pytest.approx(0.075)
+
+
+def test_heuristic_goal_distance_ignores_side_branching_until_x_four():
+    assert goal_missing_distance((4, 0), (8, -2)) == pytest.approx(4.0)
+    assert goal_missing_distance((4, -1), (8, -2)) == pytest.approx(4.0)
+    assert goal_missing_distance((3, 0), (8, 2)) == pytest.approx(5.0)
+    assert goal_missing_distance((3, 1), (8, 2)) == pytest.approx(5.0)
+
+
+def test_heuristic_goal_distance_ramps_side_branching_between_x_four_and_eight():
+    assert goal_missing_distance((6, 0), (8, -2)) == pytest.approx(3.0)
+    assert goal_missing_distance((6, -1), (8, -2)) == pytest.approx(2.5)
+    assert goal_missing_distance((8, 0), (8, 2)) == pytest.approx(2.0)
+    assert goal_missing_distance((8, 1), (8, 2)) == pytest.approx(1.0)
+
+
+def test_heuristic_tracker_updates_play_path_without_full_recompute():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=719)
+    assert env.board is not None
+    tracker = HeuristicRewardTracker.from_board(env.board)
+    play_action = next(
+        action
+        for action in env.legal_actions(env.agent_selection)
+        if isinstance(action, PlayPath)
+    )
+
+    baseline_recompute_count = tracker.recompute_count
+    env.step_known_legal(play_action)
+    tracker.apply_action(env.board, play_action)
+
+    fresh = HeuristicRewardTracker.from_board(env.board)
+    assert tracker.recompute_count == baseline_recompute_count
+    assert tracker.reachable_nodes == fresh.reachable_nodes
+    assert tracker.frontier_cells == fresh.frontier_cells
+    assert tracker.current_goal_distances() == pytest.approx(fresh.current_goal_distances())
+
+
+def test_heuristic_tracker_recomputes_after_rockfall():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=720)
+    assert env.board is not None
+    env.board.place_path(path_card_by_id("path_ew"), (1, 0), 0)
+    tracker = HeuristicRewardTracker.from_board(env.board)
+
+    baseline_recompute_count = tracker.recompute_count
+    env.board.remove_path((1, 0))
+    tracker.apply_action(env.board, Rockfall(0, 1, 0))
+
+    fresh = HeuristicRewardTracker.from_board(env.board)
+    assert tracker.recompute_count == baseline_recompute_count + 1
+    assert tracker.reachable_nodes == fresh.reachable_nodes
+    assert tracker.frontier_cells == fresh.frontier_cells
+    assert tracker.current_goal_distances() == pytest.approx(fresh.current_goal_distances())
+
+
+def test_heuristic_tracker_stays_in_sync_after_non_neural_board_turn():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=721, force_roles=[Role.SABOTEUR, Role.MINER, Role.MINER])
+    assert env.board is not None
+    tracker = HeuristicRewardTracker.from_board(env.board)
+    play_action = next(
+        action
+        for action in env.legal_actions(env.agent_selection)
+        if isinstance(action, PlayPath)
+    )
+
+    env.step_known_legal(play_action)
+    tracker.apply_action(env.board, play_action)
+
+    fresh = HeuristicRewardTracker.from_board(env.board)
+    assert tracker.reachable_nodes == fresh.reachable_nodes
+    assert tracker.frontier_cells == fresh.frontier_cells
+    assert tracker.current_goal_distances() == pytest.approx(fresh.current_goal_distances())
 
 
 def test_miners_only_rollout_filters_non_path_curriculum_actions():
@@ -260,6 +463,30 @@ def test_miners_only_rollout_filters_non_path_curriculum_actions():
         transition.action_type
         for transition in game.transitions
     } <= {"discard", "play_path", "map_goal"}
+
+
+def test_random_saboteurs_rollout_supports_heuristic_reward_mode():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=722)
+    torch.manual_seed(722)
+    model = _policy_for_env(env)
+    agent = NeuralAgent(model, deterministic=False)
+
+    game = collect_game_rollout(
+        env,
+        agent,
+        seed=722,
+        max_steps=200,
+        reward_mode="heuristic",
+        training_mode="random_saboteurs",
+    )
+
+    assert game.transitions
+    assert {transition.role for transition in game.transitions} <= {"miner"}
+    assert all(
+        torch.isfinite(torch.tensor(transition.shaping_reward))
+        for transition in game.transitions
+    )
 
 
 def test_miners_only_action_filter_can_allow_all_actions():

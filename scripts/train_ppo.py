@@ -93,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--graph-layers", type=int, default=3)
     parser.add_argument("--role-belief-coef", type=float, default=0.05)
     parser.add_argument("--goal-belief-coef", type=float, default=0.05)
-    parser.add_argument("--reward-mode", choices=("terminal", "progress"), default="terminal")
+    parser.add_argument("--reward-mode", choices=("terminal", "progress", "sabotage", "heuristic"), default="terminal")
     parser.add_argument("--training-mode", choices=("normal", "miners_only", "random_saboteurs"), default="normal")
     parser.add_argument(
         "--miners-only-actions",

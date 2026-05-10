@@ -2,6 +2,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from scripts.export_neural_eval_replays import play_neural_eval_game
 from scripts.train_ppo import (
     _deserialize_graph_rollout_games,
     _serialize_graph_rollout_games,
@@ -210,6 +211,70 @@ def test_graph_agent_rollout_and_ppo_update_are_finite():
     assert metrics.updates > 0
     assert metrics.role_belief_loss >= 0.0
     assert metrics.goal_belief_loss >= 0.0
+
+
+def test_graph_rollout_supports_heuristic_reward_mode():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=819)
+    torch.manual_seed(819)
+    model = _graph_model_for_env(env)
+    agent = GraphNeuralAgent(model, deterministic=False)
+
+    game = collect_graph_game_rollout(
+        env,
+        agent,
+        seed=819,
+        max_steps=200,
+        reward_mode="heuristic",
+    )
+
+    assert game.transitions
+    assert all(
+        torch.isfinite(torch.tensor(transition.shaping_reward))
+        for transition in game.transitions
+    )
+
+
+def test_graph_agent_reports_role_belief_probabilities():
+    env = SaboteurEnv(num_players=4)
+    env.reset(seed=817)
+    model = _graph_model_for_env(env)
+    agent = GraphNeuralAgent(model, deterministic=True)
+
+    _action, info = agent.act_with_info(env, env.agent_selection)
+
+    assert len(info.role_belief_logits) == env.num_players
+    assert len(info.role_belief_probs) == env.num_players
+    assert all(torch.isfinite(torch.tensor(value)) for value in info.role_belief_logits)
+    assert all(0.0 <= value <= 1.0 for value in info.role_belief_probs)
+
+
+def test_export_graph_replay_includes_role_beliefs():
+    env = SaboteurEnv(num_players=4)
+    env.reset(seed=818)
+    model = _graph_model_for_env(env)
+    agent = GraphNeuralAgent(model, deterministic=True)
+
+    result = play_neural_eval_game(
+        agent,
+        model_type="graph",
+        mode="miners_only",
+        num_players=4,
+        seed=818,
+        max_steps=200,
+    )
+
+    role_belief_steps = [
+        step.get("role_beliefs", [])
+        for step in result.debug.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("role_beliefs"), list) and step.get("role_beliefs")
+    ]
+    assert role_belief_steps
+    first = role_belief_steps[0]
+    assert len(first) == result.num_players
+    assert {belief["player_id"] for belief in first} == set(range(result.num_players))
+    assert any(belief["is_self"] for belief in first)
+    assert all(0.0 <= belief["saboteur_prob"] <= 1.0 for belief in first)
 
 
 def _contains_tensor(value: object) -> bool:

@@ -179,6 +179,13 @@ def test_render_html_game_contains_slider_payload_and_board_script(tmp_path):
     assert "hand-card-stack" in html
     assert "hand-card-scores" in html
     assert "hand-card-prob" in html
+    assert "Role beliefs" in html
+    assert "roleBeliefEntries" in html
+    assert "player-belief" in html
+    assert "belief-meter" in html
+    assert 'id="eventResizer"' in html
+    assert "Resize event details" in html
+    assert "startEventResize" in html
     assert "total ${formatPercent(totalProb)}" in html
     assert "discard ${formatPercent(discardProb)}" in html
     assert "compactActionLabel" in html
