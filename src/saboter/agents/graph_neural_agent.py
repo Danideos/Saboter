@@ -20,6 +20,7 @@ class GraphActionInfo:
     log_prob: float
     value: float
     entropy: float
+    action_scores: list[float]
 
 
 class GraphNeuralAgent:
@@ -88,6 +89,7 @@ class GraphNeuralAgent:
             log_prob=float(log_probs[action_index].item()),
             value=float(value.squeeze(0).item()),
             entropy=float((-(probs * log_probs).sum()).item()),
+            action_scores=[float(score) for score in logits.detach().cpu().tolist()],
         )
         return graph_features.actions[action_index], info
 

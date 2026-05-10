@@ -136,6 +136,7 @@ def render_html_game(result: object) -> str:
         "game": game,
         "events": [event for event in game.get("history", []) if isinstance(event, dict)],
         "snapshots": build_public_board_snapshots(game),
+        "debugSteps": _debug_steps(game),
         "eventLabels": [
             render_event(event) for event in game.get("history", []) if isinstance(event, dict)
         ],
@@ -359,7 +360,7 @@ def render_html_game(result: object) -> str:
     }}
     .event-panel {{
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: auto minmax(180px, 320px) minmax(0, 1fr);
     }}
     .event-current {{
       border-bottom: 1px solid var(--line);
@@ -368,6 +369,53 @@ def render_html_game(result: object) -> str:
     }}
     .event-current strong {{ display: block; margin-bottom: 4px; }}
     .event-current span {{ color: var(--muted); }}
+    .debug-panel {{
+      border-bottom: 1px solid var(--line);
+      padding: 10px 12px;
+      overflow: auto;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }}
+    .debug-title {{
+      margin: 0 0 4px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }}
+    .hand-row,
+    .score-row {{
+      display: grid;
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 6px;
+      background: #fbfcfd;
+    }}
+    .hand-row strong,
+    .score-row strong {{ font-size: 12px; }}
+    .cards,
+    .discard-pile {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }}
+    .card-chip {{
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 2px 5px;
+      background: #fff;
+      font-size: 12px;
+      white-space: nowrap;
+    }}
+    .score-row.selected {{
+      border-color: var(--focus);
+      background: #eef5ff;
+    }}
+    .score-value {{
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }}
     .event-list {{
       overflow: auto;
       padding: 8px;
@@ -424,6 +472,7 @@ def render_html_game(result: object) -> str:
             <strong id="eventHeadline"></strong>
             <span id="eventDetail"></span>
           </div>
+          <div class="debug-panel" id="debugPanel"></div>
           <div class="event-list" id="eventList"></div>
         </div>
       </section>
@@ -436,6 +485,7 @@ def render_html_game(result: object) -> str:
     const snapshots = data.snapshots;
     const events = data.events;
     const eventLabels = data.eventLabels;
+    const debugSteps = data.debugSteps || [];
     const slider = document.getElementById("stepSlider");
     const board = document.getElementById("board");
     const eventList = document.getElementById("eventList");
@@ -486,6 +536,7 @@ def render_html_game(result: object) -> str:
         step === 0 ? "Initial setup" : `Event ${{step}}`;
       document.getElementById("eventDetail").textContent =
         step === 0 ? "Start card and hidden goals are public." : eventLabels[step - 1];
+      renderDebug(step);
       [...eventList.children].forEach((row, index) => {{
         row.classList.toggle("active", index === step - 1);
       }});
@@ -493,18 +544,15 @@ def render_html_game(result: object) -> str:
 
     function renderPlayers(step) {{
       const players = document.getElementById("players");
-      const revealRoles = step >= snapshots.length - 1;
       players.replaceChildren();
       game.agent_names.forEach((agent, id) => {{
         const finalRole = game.roles[String(id)] ?? game.roles[id] ?? "?";
         const finalReward = game.rewards[String(id)] ?? game.rewards[id] ?? "?";
-        const role = revealRoles ? finalRole : "hidden";
-        const reward = revealRoles ? finalReward : "";
+        const role = finalRole;
+        const reward = finalReward;
         const row = document.createElement("div");
         row.className = `player ${{role}}`;
-        row.title = revealRoles
-          ? `P${{id}} | ${{agent}} | role ${{finalRole}} | reward ${{finalReward}}`
-          : `P${{id}} | ${{agent}} | role hidden until the final step`;
+        row.title = `P${{id}} | ${{agent}} | role ${{finalRole}} | reward ${{finalReward}}`;
         row.innerHTML = `
           <div class="player-id">P${{id}}</div>
           <div>
@@ -515,6 +563,66 @@ def render_html_game(result: object) -> str:
         `;
         players.appendChild(row);
       }});
+    }}
+
+    function renderDebug(step) {{
+      const panel = document.getElementById("debugPanel");
+      const debug = debugSteps[step] || null;
+      panel.replaceChildren();
+      if (!debug) {{
+        panel.textContent = "No private debug data in this replay.";
+        return;
+      }}
+      const actorLine = document.createElement("div");
+      actorLine.innerHTML = `<div class="debug-title">Decision</div>${{debug.actor === null || debug.actor === undefined ? "Initial state" : `P${{debug.actor}} · ${{escapeText(debug.controller || "")}}`}}`;
+      panel.appendChild(actorLine);
+
+      const selected = document.createElement("div");
+      selected.innerHTML = `<div class="debug-title">Selected</div>${{escapeText(debug.selected_action?.label || "none")}}${{debug.selected_card ? ` · card: ${{cardName(debug.selected_card)}}` : ""}}`;
+      panel.appendChild(selected);
+
+      const discard = document.createElement("div");
+      discard.innerHTML = `<div class="debug-title">Discard pile</div>`;
+      const discardCards = document.createElement("div");
+      discardCards.className = "discard-pile";
+      const pile = debug.discard_pile_after || debug.discard_pile || [];
+      if (!pile.length) discardCards.appendChild(chip("empty"));
+      pile.forEach(card => discardCards.appendChild(chip(card ? cardName(card) : "face-down")));
+      discard.appendChild(discardCards);
+      panel.appendChild(discard);
+
+      const hands = document.createElement("div");
+      hands.innerHTML = `<div class="debug-title">Hands</div>`;
+      Object.entries(debug.hands || {{}}).forEach(([playerId, hand]) => {{
+        const row = document.createElement("div");
+        row.className = "hand-row";
+        const cards = document.createElement("div");
+        cards.className = "cards";
+        (hand || []).forEach((card, index) => cards.appendChild(chip(`${{index}}:${{cardName(card)}}`)));
+        if (!cards.children.length) cards.appendChild(chip("empty"));
+        row.appendChild(strong(`P${{playerId}}`));
+        row.appendChild(cards);
+        hands.appendChild(row);
+      }});
+      panel.appendChild(hands);
+
+      const scored = Array.isArray(debug.legal_actions)
+        ? debug.legal_actions.filter(action => typeof action.score === "number")
+        : [];
+      if (scored.length) {{
+        const scores = document.createElement("div");
+        scores.innerHTML = `<div class="debug-title">Legal action scores</div>`;
+        scored
+          .slice()
+          .sort((left, right) => Number(right.score) - Number(left.score))
+          .forEach(action => {{
+            const row = document.createElement("div");
+            row.className = `score-row${{action.selected ? " selected" : ""}}`;
+            row.innerHTML = `<strong>${{escapeText(action.label)}}</strong><span class="score-value">score=${{Number(action.score).toFixed(3)}}</span>`;
+            scores.appendChild(row);
+          }});
+        panel.appendChild(scores);
+      }}
     }}
 
     function renderTile(tile) {{
@@ -635,6 +743,23 @@ def render_html_game(result: object) -> str:
       node.className = "pill";
       node.textContent = text;
       return node;
+    }}
+
+    function chip(text) {{
+      const node = document.createElement("span");
+      node.className = "card-chip";
+      node.textContent = text;
+      return node;
+    }}
+
+    function strong(text) {{
+      const node = document.createElement("strong");
+      node.textContent = text;
+      return node;
+    }}
+
+    function cardName(card) {{
+      return card && (card.id || card.type) ? String(card.id || card.type) : "unknown";
     }}
 
     function escapeText(value) {{
@@ -782,6 +907,14 @@ def _game_dict(result: object) -> dict[str, object]:
     if not isinstance(game, dict):
         raise TypeError("expected a GameResult or mapping")
     return game
+
+
+def _debug_steps(game: dict[str, object]) -> list[dict[str, object]]:
+    debug = game.get("debug", {})
+    if not isinstance(debug, dict):
+        return []
+    steps = debug.get("steps", [])
+    return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
 
 
 def _initial_public_board() -> dict[tuple[int, int], dict[str, object]]:

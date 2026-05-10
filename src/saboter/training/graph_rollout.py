@@ -28,6 +28,7 @@ class GraphTransition:
     player_id: int
     role: str
     action_type: str
+    map_available: bool = False
     reachable_tiles: float = 0.0
     frontier_empty_cells: float = 0.0
     min_distance_to_goal: float = 0.0
@@ -86,6 +87,7 @@ def collect_graph_game_rollout(
 
         role = env.players[player_id].role.value
         observation = env.observe(player_id)
+        map_available = _has_map_card(observation)
         before_progress = decision_progress_from_observation(observation)
         before_game_progress = game_progress_from_env(env)
 
@@ -126,6 +128,7 @@ def collect_graph_game_rollout(
                 player_id=player_id,
                 role=role,
                 action_type=_action_type_name(action),
+                map_available=map_available,
                 reachable_tiles=before_progress.reachable_tiles,
                 frontier_empty_cells=before_progress.frontier_empty_cells,
                 min_distance_to_goal=before_progress.min_distance_to_goal,
@@ -150,6 +153,7 @@ def collect_graph_game_rollout(
                 player_id=transition.player_id,
                 role=transition.role,
                 action_type=transition.action_type,
+                map_available=transition.map_available,
                 reachable_tiles=transition.reachable_tiles,
                 frontier_empty_cells=transition.frontier_empty_cells,
                 min_distance_to_goal=transition.min_distance_to_goal,
@@ -213,3 +217,10 @@ def _action_type_name(action: object) -> str:
     if isinstance(action, Discard):
         return "discard"
     return type(action).__name__
+
+
+def _has_map_card(observation: dict[str, object]) -> bool:
+    hand = observation.get("hand", [])
+    if not isinstance(hand, list):
+        return False
+    return any(isinstance(card, dict) and card.get("type") == "map" for card in hand)

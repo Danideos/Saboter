@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, Sequence
@@ -64,6 +64,7 @@ class GameResult:
     final_board: list[dict[str, object]]
     deck_size: int
     remaining_hand_sizes: dict[int, int]
+    debug: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return _jsonable(asdict(self))

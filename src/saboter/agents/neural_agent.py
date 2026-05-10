@@ -21,6 +21,7 @@ class NeuralActionInfo:
     log_prob: float
     value: float
     entropy: float
+    action_scores: list[float]
 
 
 class NeuralAgent:
@@ -103,6 +104,7 @@ class NeuralAgent:
             log_prob=log_prob,
             value=float(value.squeeze(0).item()),
             entropy=entropy,
+            action_scores=[float(score) for score in logits.detach().cpu().tolist()],
         )
         return action_features[action_index].action, info
 

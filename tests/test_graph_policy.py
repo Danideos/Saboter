@@ -234,8 +234,13 @@ def test_train_ppo_graph_script_runs_one_iteration_and_saves_checkpoint(tmp_path
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "iter=1" in output
-    assert "role_belief_loss=" in output
-    assert "goal_belief_loss=" in output
-    assert "avg_reachable_tiles=" in output
+    assert "reach=" in output
+    assert "map_if_have=" in output
     assert "checkpoint=" in output
     assert (tmp_path / "checkpoint_0001.pt").exists()
+    metrics_log = (tmp_path / "metrics.log").read_text(encoding="utf-8")
+    assert "role_belief_loss=" in metrics_log
+    assert "goal_belief_loss=" in metrics_log
+    assert "avg_reachable_tiles=" in metrics_log
+    assert "map_play_when_available_rate=" in metrics_log
+    assert (tmp_path / "metrics.jsonl").exists()

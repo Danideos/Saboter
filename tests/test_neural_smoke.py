@@ -4,6 +4,7 @@ torch = pytest.importorskip("torch")
 
 from scripts.smoke_test_neural_agent import main as neural_smoke_main
 from scripts.collect_rollouts_smoke import main as rollout_smoke_main
+from scripts.export_neural_eval_replays import play_neural_eval_game
 from scripts.train_ppo import (
     _split_games,
     _prune_checkpoints,
@@ -326,12 +327,18 @@ def test_train_ppo_script_runs_one_iteration_and_saves_checkpoint(tmp_path, caps
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "iter=1" in output
-    assert "policy_loss=" in output
-    assert "play_path_rate=" in output
-    assert "avg_rollout_entropy=" in output
+    assert "path=" in output
+    assert "map_if_have=" in output
+    assert "entropy=" in output
     assert "eval_vs_random_miners_win_rate=" in output
     assert "checkpoint=" in output
     assert (tmp_path / "checkpoint_0001.pt").exists()
+    metrics_log = (tmp_path / "metrics.log").read_text(encoding="utf-8")
+    assert "policy_loss=" in metrics_log
+    assert "play_path_rate=" in metrics_log
+    assert "map_play_when_available_rate=" in metrics_log
+    assert "avg_rollout_entropy=" in metrics_log
+    assert (tmp_path / "metrics.jsonl").exists()
 
 
 def test_evaluate_vs_random_supports_multiple_neural_seats():
@@ -351,6 +358,29 @@ def test_evaluate_vs_random_supports_multiple_neural_seats():
 
     assert "eval_2_ours_vs_random_miners_win_rate" in metrics
     assert "eval_2_ours_vs_random_neural_avg_reward" in metrics
+
+
+def test_export_vs_random_replay_uses_learned_miners_and_random_saboteurs():
+    env = SaboteurEnv(num_players=5)
+    env.reset(seed=716)
+    model = _policy_for_env(env)
+    agent = NeuralAgent(model, deterministic=True)
+
+    result = play_neural_eval_game(
+        agent,
+        model_type="flat",
+        mode="vs_random",
+        num_players=5,
+        seed=716,
+        max_steps=200,
+    )
+
+    assert any(role == "saboteur" for role in result.roles.values())
+    for player_id, role in result.roles.items():
+        if role == "miner":
+            assert result.agent_names[player_id] == "flat-neural-miner"
+        else:
+            assert result.agent_names[player_id] == "legal-random-saboteur"
 
 
 def test_evaluate_miners_only_reports_progress_metrics():

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -73,7 +74,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--eval-games", type=int, default=16)
-    parser.add_argument("--eval-neural-counts", type=int, nargs="+", default=[1])
+    parser.add_argument(
+        "--eval-neural-counts",
+        type=int,
+        nargs="+",
+        default=[1],
+    )
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument(
@@ -225,18 +231,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             _prune_checkpoints(args.save_dir, args.keep_checkpoints)
 
-        print(
-            _format_metrics(
-                iteration=iteration,
-                games=games_per_iteration,
-                transitions=len(transitions),
-                rollout_metrics=rollout_metrics,
-                ppo_metrics=ppo_metrics,
-                eval_metrics=eval_metrics,
-                checkpoint_path=checkpoint_path,
-            ),
-            flush=True,
+        metrics_payload = _metrics_payload(
+            iteration=iteration,
+            games=games_per_iteration,
+            transitions=len(transitions),
+            rollout_metrics=rollout_metrics,
+            ppo_metrics=ppo_metrics,
+            eval_metrics=eval_metrics,
+            checkpoint_path=checkpoint_path,
         )
+        _append_metrics_logs(args.save_dir, metrics_payload)
+        print(_format_console_metrics(metrics_payload), flush=True)
     return 0
 
 
@@ -679,6 +684,7 @@ def _serialize_transition(transition: Transition) -> dict[str, object]:
         "player_id": transition.player_id,
         "role": transition.role,
         "action_type": transition.action_type,
+        "map_available": transition.map_available,
         "reachable_tiles": transition.reachable_tiles,
         "frontier_empty_cells": transition.frontier_empty_cells,
         "min_distance_to_goal": transition.min_distance_to_goal,
@@ -703,6 +709,7 @@ def _deserialize_transition(data: object) -> Transition:
         player_id=int(item["player_id"]),
         role=str(item["role"]),
         action_type=str(item["action_type"]),
+        map_available=bool(item.get("map_available", False)),
         reachable_tiles=float(item["reachable_tiles"]),
         frontier_empty_cells=float(item["frontier_empty_cells"]),
         min_distance_to_goal=float(item["min_distance_to_goal"]),
@@ -757,6 +764,7 @@ def _serialize_graph_transition(transition: GraphTransition) -> dict[str, object
         "player_id": transition.player_id,
         "role": transition.role,
         "action_type": transition.action_type,
+        "map_available": transition.map_available,
         "reachable_tiles": transition.reachable_tiles,
         "frontier_empty_cells": transition.frontier_empty_cells,
         "min_distance_to_goal": transition.min_distance_to_goal,
@@ -779,6 +787,7 @@ def _deserialize_graph_transition(data: object) -> GraphTransition:
         player_id=int(item["player_id"]),
         role=str(item["role"]),
         action_type=str(item["action_type"]),
+        map_available=bool(item.get("map_available", False)),
         reachable_tiles=float(item["reachable_tiles"]),
         frontier_empty_cells=float(item["frontier_empty_cells"]),
         min_distance_to_goal=float(item["min_distance_to_goal"]),
@@ -863,6 +872,17 @@ def _rollout_metrics(
     for action_type in ("play_path", "discard", "map_goal", "sabotage", "repair", "rockfall"):
         count = sum(1 for transition in transitions if transition.action_type == action_type)
         metrics[f"{action_type}_rate"] = count / total_transitions
+    map_available_count = sum(1 for transition in transitions if transition.map_available)
+    map_play_when_available_count = sum(
+        1
+        for transition in transitions
+        if transition.map_available and transition.action_type == "map_goal"
+    )
+    metrics["map_available_count"] = float(map_available_count)
+    metrics["map_play_when_available_count"] = float(map_play_when_available_count)
+    metrics["map_play_when_available_rate"] = (
+        map_play_when_available_count / map_available_count if map_available_count else 0.0
+    )
     for role in ("miner", "saboteur"):
         role_transitions = [transition for transition in transitions if transition.role == role]
         role_count = max(1, len(role_transitions))
@@ -877,7 +897,7 @@ def _rollout_metrics(
     return metrics
 
 
-def _format_metrics(
+def _metrics_payload(
     *,
     iteration: int,
     games: int,
@@ -886,51 +906,74 @@ def _format_metrics(
     ppo_metrics: object,
     eval_metrics: dict[str, float],
     checkpoint_path: Path | None,
-) -> str:
-    parts = [
-        f"iter={iteration}",
-        f"games={games}",
-        f"transitions={transitions}",
-        f"avg_reward={rollout_metrics['avg_reward']:.4f}",
-        f"avg_terminal_reward={rollout_metrics['avg_terminal_reward']:.4f}",
-        f"avg_shaping_reward={rollout_metrics['avg_shaping_reward']:.4f}",
-        f"miners_win_rate={rollout_metrics['miners_win_rate']:.4f}",
-        f"avg_game_length={rollout_metrics['avg_game_length']:.2f}",
-        f"avg_rollout_entropy={rollout_metrics['avg_rollout_entropy']:.4f}",
-        f"avg_rollout_value={rollout_metrics['avg_rollout_value']:.4f}",
-        f"avg_legal_actions={rollout_metrics['avg_legal_actions']:.2f}",
-        f"avg_revealed_goals={rollout_metrics['avg_revealed_goals']:.2f}",
-        f"avg_reachable_tiles={rollout_metrics['avg_reachable_tiles']:.2f}",
-        f"avg_frontier_empty_cells={rollout_metrics['avg_frontier_empty_cells']:.2f}",
-        f"avg_min_distance_to_goal={rollout_metrics['avg_min_distance_to_goal']:.2f}",
-        f"avg_public_stone_reaches={rollout_metrics['avg_public_stone_reaches']:.2f}",
-        f"avg_gold_reaches={rollout_metrics['avg_gold_reaches']:.2f}",
-        f"avg_private_goal_knowledge_count={rollout_metrics['avg_private_goal_knowledge_count']:.2f}",
-        f"play_path_rate={rollout_metrics['play_path_rate']:.4f}",
-        f"discard_rate={rollout_metrics['discard_rate']:.4f}",
-        f"play_path_rate_miner={rollout_metrics['play_path_rate_miner']:.4f}",
-        f"play_path_rate_saboteur={rollout_metrics['play_path_rate_saboteur']:.4f}",
-        f"discard_rate_miner={rollout_metrics['discard_rate_miner']:.4f}",
-        f"discard_rate_saboteur={rollout_metrics['discard_rate_saboteur']:.4f}",
-        f"map_goal_rate={rollout_metrics['map_goal_rate']:.4f}",
-        f"sabotage_rate={rollout_metrics['sabotage_rate']:.4f}",
-        f"repair_rate={rollout_metrics['repair_rate']:.4f}",
-        f"rockfall_rate={rollout_metrics['rockfall_rate']:.4f}",
-        f"policy_loss={ppo_metrics.policy_loss:.6f}",
-        f"value_loss={ppo_metrics.value_loss:.6f}",
-        f"entropy={ppo_metrics.entropy:.6f}",
-        f"approx_kl={ppo_metrics.approx_kl:.6f}",
-        f"clip_fraction={ppo_metrics.clip_fraction:.4f}",
-        f"grad_norm={ppo_metrics.grad_norm:.6f}",
-    ]
-    if hasattr(ppo_metrics, "role_belief_loss"):
-        parts.append(f"role_belief_loss={ppo_metrics.role_belief_loss:.6f}")
-    if hasattr(ppo_metrics, "goal_belief_loss"):
-        parts.append(f"goal_belief_loss={ppo_metrics.goal_belief_loss:.6f}")
-    for key, value in sorted(eval_metrics.items()):
-        parts.append(f"{key}={value:.4f}")
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "iteration": iteration,
+        "games": games,
+        "transitions": transitions,
+        **rollout_metrics,
+        **{key: float(value) for key, value in asdict(ppo_metrics).items()},
+        **eval_metrics,
+    }
     if checkpoint_path is not None:
-        parts.append(f"checkpoint={checkpoint_path}")
+        payload["checkpoint"] = str(checkpoint_path)
+    return payload
+
+
+def _append_metrics_logs(save_dir: Path, payload: dict[str, object]) -> None:
+    save_dir.mkdir(parents=True, exist_ok=True)
+    with (save_dir / "metrics.jsonl").open("a", encoding="utf-8") as json_file:
+        json_file.write(json.dumps(payload, sort_keys=True) + "\n")
+    with (save_dir / "metrics.log").open("a", encoding="utf-8") as text_file:
+        text_file.write(_format_detailed_metrics(payload) + "\n")
+
+
+def _format_console_metrics(payload: dict[str, object]) -> str:
+    parts = [
+        f"iter={int(payload['iteration'])}",
+        f"games={int(payload['games'])}",
+        f"transitions={int(payload['transitions'])}",
+        f"win={float(payload['miners_win_rate']):.3f}",
+        f"reward={float(payload['avg_reward']):.4f}",
+        f"term={float(payload['avg_terminal_reward']):.4f}",
+        f"shape={float(payload['avg_shaping_reward']):.4f}",
+        f"len={float(payload['avg_game_length']):.1f}",
+        f"path={float(payload['play_path_rate']):.3f}",
+        f"discard={float(payload['discard_rate']):.3f}",
+        f"map_if_have={float(payload['map_play_when_available_rate']):.3f}",
+        f"reach={float(payload['avg_reachable_tiles']):.1f}",
+        f"dist={float(payload['avg_min_distance_to_goal']):.2f}",
+        f"entropy={float(payload['entropy']):.3f}",
+        f"kl={float(payload['approx_kl']):.4f}",
+        f"clip={float(payload['clip_fraction']):.3f}",
+        f"v_loss={float(payload['value_loss']):.4f}",
+    ]
+    for key in sorted(payload):
+        if key == "miners_win_rate":
+            continue
+        if (
+            key.endswith("_win_rate")
+            or key.endswith("_neural_avg_reward")
+            or key.endswith("_learned_miner_avg_reward")
+        ):
+            parts.append(f"{key}={float(payload[key]):.3f}")
+    checkpoint = payload.get("checkpoint")
+    if isinstance(checkpoint, str):
+        parts.append(f"checkpoint={checkpoint}")
+    return " ".join(parts)
+
+
+def _format_detailed_metrics(payload: dict[str, object]) -> str:
+    parts = [
+        f"{key}={value}"
+        for key, value in sorted(payload.items())
+        if not isinstance(value, float)
+    ]
+    parts.extend(
+        f"{key}={value:.6f}"
+        for key, value in sorted(payload.items())
+        if isinstance(value, float)
+    )
     return " ".join(parts)
 
 

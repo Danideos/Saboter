@@ -59,7 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.games <= 0:
         raise ValueError("--games must be positive")
-    if not 1 <= args.neural_count <= args.players:
+    if args.mode == "miners_only" and not 1 <= args.neural_count <= args.players:
         raise ValueError("--neural-count must be in 1..players")
 
     device = torch.device(args.device)
@@ -107,13 +107,15 @@ def play_neural_eval_game(
         roster = [f"{model_type}-neural-miner" for _player in range(num_players)]
     else:
         env.reset(seed=seed)
-        first_neural_seat = seed % num_players
         neural_seats = {
-            (first_neural_seat + offset) % num_players
-            for offset in range(neural_count)
+            player_id
+            for player_id, player in enumerate(env.players)
+            if player.role == Role.MINER
         }
         roster = [
-            f"{model_type}-neural" if player_id in neural_seats else "legal-random"
+            f"{model_type}-neural-miner"
+            if player_id in neural_seats
+            else "legal-random-saboteur"
             for player_id in range(num_players)
         ]
 
@@ -122,6 +124,7 @@ def play_neural_eval_game(
         for player_id in range(num_players)
     ]
     action_counts: Counter[str] = Counter()
+    debug_steps: list[dict[str, object]] = [_debug_snapshot(env, actor=None)]
     steps = 0
     while not env.is_terminal():
         if steps >= max_steps:
@@ -139,8 +142,9 @@ def play_neural_eval_game(
 
         if not legal_actions:
             action = None
+            info = None
         elif player_id in neural_seats:
-            action, _info = agent.act_with_info(
+            action, info = agent.act_with_info(
                 env,
                 player_id,
                 legal_actions=legal_actions,
@@ -148,9 +152,21 @@ def play_neural_eval_game(
             )
         else:
             action = random_agents[player_id].act(env, player_id)
+            info = None
 
+        debug_step = _debug_step(
+            env,
+            actor=player_id,
+            legal_actions=legal_actions,
+            action=action,
+            info=info,
+            observation=observation,
+            controller=roster[player_id],
+        )
         action_counts[_action_kind(action)] += 1
         env.step(action)
+        debug_step["discard_pile_after"] = _discard_pile(env)
+        debug_steps.append(debug_step)
         steps += 1
 
     return GameResult(
@@ -169,6 +185,7 @@ def play_neural_eval_game(
         remaining_hand_sizes={
             player_id: len(player.hand) for player_id, player in enumerate(env.players)
         },
+        debug={"steps": debug_steps},
     )
 
 
@@ -225,6 +242,113 @@ def _action_kind(action: Action | None) -> str:
     if isinstance(action, Rockfall):
         return "rockfall"
     return type(action).__name__
+
+
+def _debug_snapshot(env: SaboteurEnv, actor: int | None) -> dict[str, object]:
+    return {
+        "actor": actor,
+        "hands": _hands(env),
+        "discard_pile": _discard_pile(env),
+        "deck_size": len(env.deck),
+    }
+
+
+def _debug_step(
+    env: SaboteurEnv,
+    *,
+    actor: int,
+    legal_actions: list[Action],
+    action: Action | None,
+    info: object | None,
+    observation: dict[str, object],
+    controller: str,
+) -> dict[str, object]:
+    selected_card = _selected_card(observation, action)
+    scores = getattr(info, "action_scores", None)
+    action_index = getattr(info, "action_index", None)
+    return {
+        **_debug_snapshot(env, actor=actor),
+        "controller": controller,
+        "selected_action": _action_debug(action, score=None, selected=True),
+        "selected_card": selected_card,
+        "legal_actions": [
+            _action_debug(
+                candidate,
+                score=(
+                    float(scores[index])
+                    if isinstance(scores, list) and index < len(scores)
+                    else None
+                ),
+                selected=index == action_index,
+            )
+            for index, candidate in enumerate(legal_actions)
+        ],
+    }
+
+
+def _hands(env: SaboteurEnv) -> dict[int, list[dict[str, object]]]:
+    return {
+        player_id: [card.public_dict() for card in player.hand]
+        for player_id, player in enumerate(env.players)
+    }
+
+
+def _discard_pile(env: SaboteurEnv) -> list[dict[str, object] | None]:
+    return list(env.discard_pile)
+
+
+def _selected_card(observation: dict[str, object], action: Action | None) -> dict[str, object] | None:
+    if action is None:
+        return None
+    hand = observation.get("hand", [])
+    if not isinstance(hand, list) or not 0 <= action.card_slot < len(hand):
+        return None
+    card = hand[action.card_slot]
+    return card if isinstance(card, dict) else None
+
+
+def _action_debug(
+    action: Action | None,
+    *,
+    score: float | None,
+    selected: bool,
+) -> dict[str, object]:
+    data: dict[str, object] = {
+        "label": _action_label(action),
+        "type": _action_kind(action),
+        "score": score,
+        "selected": selected,
+    }
+    if action is None:
+        return data
+    data["card_slot"] = action.card_slot
+    if isinstance(action, PlayPath):
+        data.update({"x": action.x, "y": action.y, "rotation": action.rotation})
+    elif isinstance(action, (SabotageTool, RepairTool)):
+        data.update({"target_player": action.target_player, "tool": action.tool.value})
+    elif isinstance(action, MapGoal):
+        data["goal_index"] = action.goal_index
+    elif isinstance(action, Rockfall):
+        data.update({"x": action.x, "y": action.y})
+    return data
+
+
+def _action_label(action: Action | None) -> str:
+    if action is None:
+        return "skip"
+    if isinstance(action, Discard):
+        return f"discard slot {action.card_slot}"
+    if isinstance(action, PlayPath):
+        return f"play slot {action.card_slot} at ({action.x}, {action.y}) r{action.rotation}"
+    if isinstance(action, SabotageTool):
+        return f"sabotage P{action.target_player} {action.tool.value} slot {action.card_slot}"
+    if isinstance(action, RepairTool):
+        return f"repair P{action.target_player} {action.tool.value} slot {action.card_slot}"
+    if isinstance(action, MapGoal):
+        return f"map goal {action.goal_index} slot {action.card_slot}"
+    if isinstance(action, Rockfall):
+        return f"rockfall ({action.x}, {action.y}) slot {action.card_slot}"
+    return repr(action)
 
 
 if __name__ == "__main__":
