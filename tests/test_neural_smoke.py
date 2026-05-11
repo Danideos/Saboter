@@ -359,6 +359,80 @@ def test_heuristic_reward_mode_keeps_sabotage_target_rewards():
     ) == pytest.approx(0.0)
 
 
+def test_heuristic_reward_mode_rewards_miner_public_stone_reveal():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=724, force_roles=[Role.MINER, Role.SABOTEUR, Role.MINER])
+    progress = DecisionProgress(0.0, 0.0, 0.0, 0.0)
+
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="heuristic",
+        role="miner",
+        action=PlayPath(0, 1, 0, 0),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=GameProgress(0.0, 0.0),
+        after_game_progress=GameProgress(1.0, 0.0),
+        before_heuristic_goal_distances=(5.0, 5.0, 5.0),
+        after_heuristic_goal_distances=(5.0, 5.0, 5.0),
+    ) == pytest.approx(0.2)
+
+
+def test_heuristic_reward_mode_adds_stone_reveal_to_path_progress():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=725, force_roles=[Role.MINER, Role.SABOTEUR, Role.MINER])
+    progress = DecisionProgress(0.0, 0.0, 0.0, 0.0)
+
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="heuristic",
+        role="miner",
+        action=PlayPath(0, 1, 0, 0),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=GameProgress(0.0, 0.0),
+        after_game_progress=GameProgress(1.0, 0.0),
+        before_heuristic_goal_distances=(5.0, 5.0, 5.0),
+        after_heuristic_goal_distances=(4.0, 4.0, 4.0),
+    ) == pytest.approx(0.275)
+
+
+def test_heuristic_reward_mode_does_not_give_saboteurs_stone_reveal_bonus():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=726, force_roles=[Role.MINER, Role.SABOTEUR, Role.MINER])
+    progress = DecisionProgress(0.0, 0.0, 0.0, 0.0)
+
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="heuristic",
+        role="saboteur",
+        action=PlayPath(0, 1, 0, 0),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=GameProgress(0.0, 0.0),
+        after_game_progress=GameProgress(1.0, 0.0),
+        before_heuristic_goal_distances=(5.0, 5.0, 5.0),
+        after_heuristic_goal_distances=(5.0, 5.0, 5.0),
+    ) == pytest.approx(0.0)
+
+
+def test_progress_reward_mode_keeps_existing_stone_reveal_reward():
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=727, force_roles=[Role.MINER, Role.SABOTEUR, Role.MINER])
+    progress = DecisionProgress(0.0, 0.0, 0.0, 0.0)
+
+    assert shaping_reward_for_transition(
+        env,
+        reward_mode="progress",
+        role="miner",
+        action=PlayPath(0, 1, 0, 0),
+        before_progress=progress,
+        after_progress=progress,
+        before_game_progress=GameProgress(0.0, 0.0),
+        after_game_progress=GameProgress(1.0, 0.0),
+    ) == pytest.approx(0.2)
+
+
 def test_heuristic_path_reward_gives_point_zero_seven_five_for_three_goal_progress():
     before = frontier_goal_distance_summary({(3, 0)})
     after = frontier_goal_distance_summary({(4, 0)})

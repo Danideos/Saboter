@@ -42,11 +42,16 @@ def shaping_reward_for_transition(
         sabotage_reward = _sabotage_reward(env, role, action)
         if sabotage_reward != 0.0:
             return sabotage_reward
+        stone_reveal_reward = _miner_stone_reveal_reward(
+            role,
+            before_game_progress,
+            after_game_progress,
+        )
         if not isinstance(action, PlayPath):
-            return 0.0
+            return stone_reveal_reward
         if before_heuristic_goal_distances is None or after_heuristic_goal_distances is None:
-            return 0.0
-        return heuristic_path_reward(
+            return stone_reveal_reward
+        return stone_reveal_reward + heuristic_path_reward(
             before_heuristic_goal_distances,
             after_heuristic_goal_distances,
         )
@@ -66,3 +71,14 @@ def _sabotage_reward(
     if role == Role.SABOTEUR.value:
         return 0.1 if target_role == Role.MINER.value else -0.1
     return 0.0
+
+
+def _miner_stone_reveal_reward(
+    role: str,
+    before_game_progress: GameProgress,
+    after_game_progress: GameProgress,
+) -> float:
+    if role != Role.MINER.value:
+        return 0.0
+    delta_stone = after_game_progress.public_stone_reaches - before_game_progress.public_stone_reaches
+    return max(0.0, delta_stone) * 0.2
