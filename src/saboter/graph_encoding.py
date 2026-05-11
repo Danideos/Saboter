@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from saboter.actions import Action, Discard, MapGoal, PlayPath, RepairTool, Rockfall, SabotageTool
 from saboter.board import GOAL_COORDS, START_COORD
-from saboter.cards import CardType, GoalKind, Role, Tool
+from saboter.cards import CardType, GoalKind, Role, START_CARD, Tool
 from saboter.encoding_utils import (
     CONNECTION_PAIRS,
     DIRECTIONS,
@@ -40,6 +40,7 @@ from saboter.observation import (
 
 
 GRAPH_MAX_HISTORY = 60
+GRAPH_HISTORY_MAX_EVENTS = 100
 
 
 NODE_TYPE_NAMES = (
@@ -166,6 +167,34 @@ GRAPH_NODE_FEATURE_NAMES = (
 GRAPH_F = {name: index for index, name in enumerate(GRAPH_NODE_FEATURE_NAMES)}
 GRAPH_NODE_FEATURE_SIZE = len(GRAPH_NODE_FEATURE_NAMES)
 
+HISTORY_EVENT_FEATURE_NAMES = (
+    "present",
+    "age_norm",
+    "turn_norm",
+    *(f"action_{action_type}" for action_type in HISTORY_ACTION_TYPES),
+    *(f"card_type_{card_type}" for card_type in CARD_TYPE_NAMES),
+    "actor_present",
+    "actor_relative_norm",
+    "target_present",
+    "target_relative_norm",
+    *(f"tool_{tool}" for tool in TOOL_NAMES),
+    "coord_present",
+    "x_norm",
+    "y_norm",
+    "goal_0",
+    "goal_1",
+    "goal_2",
+    "revealed_gold",
+    "revealed_stone",
+    "event_delta_reachable_norm",
+    "event_delta_distance_norm",
+    "event_removed_reachable_tile",
+    "event_revealed_stone",
+    "event_reached_gold_terminal",
+)
+HISTORY_EVENT_F = {name: index for index, name in enumerate(HISTORY_EVENT_FEATURE_NAMES)}
+HISTORY_EVENT_FEATURE_SIZE = len(HISTORY_EVENT_FEATURE_NAMES)
+
 
 @dataclass(frozen=True)
 class GraphFeatures:
@@ -178,11 +207,17 @@ class GraphFeatures:
     player_node_indices: list[int]
     goal_node_indices: list[int]
     actions: list[Action]
+    history_features: list[list[float]] = field(default_factory=list)
+    history_valid_mask: list[bool] = field(default_factory=list)
+    history_actor: list[int] = field(default_factory=list)
+    history_target_player: list[int] = field(default_factory=list)
+    history_goal: list[int] = field(default_factory=list)
     role_labels: list[float] | None = None
     goal_labels: list[float] | None = None
     node_feature_names: tuple[str, ...] = GRAPH_NODE_FEATURE_NAMES
     node_type_names: tuple[str, ...] = NODE_TYPE_NAMES
     edge_type_names: tuple[str, ...] = EDGE_TYPE_NAMES
+    history_feature_names: tuple[str, ...] = HISTORY_EVENT_FEATURE_NAMES
 
 
 class _GraphBuilder:
@@ -261,6 +296,13 @@ def encode_graph_features(
     _add_global_edges(builder, global_index)
     _add_turn_edges(builder, player_indices)
     _add_cell_edges(builder, observation, cell_indices)
+    (
+        history_features,
+        history_valid_mask,
+        history_actor,
+        history_target_player,
+        history_goal,
+    ) = _structured_history_sequence(observation, observer_id, num_players)
 
     return GraphFeatures(
         node_features=builder.node_features,
@@ -272,6 +314,11 @@ def encode_graph_features(
         player_node_indices=player_indices,
         goal_node_indices=goal_indices,
         actions=list(legal_actions),
+        history_features=history_features,
+        history_valid_mask=history_valid_mask,
+        history_actor=history_actor,
+        history_target_player=history_target_player,
+        history_goal=history_goal,
         role_labels=role_labels,
         goal_labels=goal_labels,
     )
@@ -657,6 +704,238 @@ def _history_features(
     elif revealed_goal_kind == GoalKind.STONE.value:
         _set(row, "revealed_stone", 1.0)
     return row
+
+
+def _structured_history_sequence(
+    observation: dict[str, object],
+    observer_id: int,
+    num_players: int,
+    max_events: int = GRAPH_HISTORY_MAX_EVENTS,
+) -> tuple[list[list[float]], list[bool], list[int], list[int], list[int]]:
+    history = observation.get("history", [])
+    if not isinstance(history, list) or max_events <= 0:
+        return [], [], [], [], []
+    events = [event for event in history if isinstance(event, dict)]
+    start_index = max(0, len(events) - max_events)
+    public_tiles = _initial_public_tiles()
+    rows: list[list[float]] = []
+    valid: list[bool] = []
+    actors: list[int] = []
+    targets: list[int] = []
+    goals: list[int] = []
+    for event_index, event in enumerate(events):
+        before = _public_progress(public_tiles)
+        before_reachable = before.reachable
+        _apply_public_event(public_tiles, event)
+        after = _public_progress(public_tiles)
+        if event_index < start_index:
+            continue
+        row, actor, target, goal = _structured_history_features(
+            event,
+            observer_id,
+            num_players,
+            age_index=len(events) - 1 - event_index,
+            turn_index=event_index,
+        )
+        reachable_delta = after.reachable_count - before.reachable_count
+        distance_delta = before.min_distance_to_goal - after.min_distance_to_goal
+        _set_event(row, "event_delta_reachable_norm", _signed_normalize(reachable_delta, 40))
+        _set_event(row, "event_delta_distance_norm", _signed_normalize(distance_delta, 36))
+        removed_coord = _event_coord(event)
+        removed_reachable = (
+            event.get("action_type") == "rockfall"
+            and removed_coord is not None
+            and removed_coord in before_reachable
+        )
+        _set_event(row, "event_removed_reachable_tile", 1.0 if removed_reachable else 0.0)
+        revealed_stone = event.get("revealed_goal_kind") == GoalKind.STONE.value
+        revealed_gold = event.get("revealed_goal_kind") == GoalKind.GOLD.value
+        _set_event(row, "event_revealed_stone", 1.0 if revealed_stone else 0.0)
+        _set_event(row, "event_reached_gold_terminal", 1.0 if revealed_gold else 0.0)
+        rows.append(row)
+        valid.append(True)
+        actors.append(actor)
+        targets.append(target)
+        goals.append(goal)
+    return rows, valid, actors, targets, goals
+
+
+def _structured_history_features(
+    event: dict[str, object],
+    observer_id: int,
+    num_players: int,
+    age_index: int,
+    turn_index: int,
+) -> tuple[list[float], int, int, int]:
+    row = [0.0 for _ in HISTORY_EVENT_FEATURE_NAMES]
+    _set_event(row, "present", 1.0)
+    _set_event(row, "age_norm", normalize_count(age_index, GRAPH_HISTORY_MAX_EVENTS - 1))
+    _set_event(row, "turn_norm", normalize_count(turn_index, 120))
+    action_type = event.get("action_type")
+    if isinstance(action_type, str):
+        _set_event(row, f"action_{action_type}", 1.0)
+    card = event.get("card")
+    if isinstance(card, dict):
+        card_type = card.get("type")
+        if isinstance(card_type, str) and card_type in CARD_TYPE_NAMES:
+            _set_event(row, f"card_type_{card_type}", 1.0)
+
+    actor_index = -1
+    actor = event.get("actor")
+    if isinstance(actor, int):
+        actor_index = (actor - observer_id) % num_players
+        _set_event(row, "actor_present", 1.0)
+        _set_event(row, "actor_relative_norm", normalize_count(actor_index, max(1, num_players - 1)))
+
+    target_index = -1
+    target = event.get("target_player")
+    if isinstance(target, int):
+        target_index = (target - observer_id) % num_players
+        _set_event(row, "target_present", 1.0)
+        _set_event(row, "target_relative_norm", normalize_count(target_index, max(1, num_players - 1)))
+
+    tool = event.get("tool")
+    if isinstance(tool, str) and tool in TOOL_NAMES:
+        _set_event(row, f"tool_{tool}", 1.0)
+    coord = _event_coord(event)
+    if coord is not None:
+        _set_event(row, "coord_present", 1.0)
+        _set_event(row, "x_norm", _normalize_x(coord[0]))
+        _set_event(row, "y_norm", _normalize_y(coord[1]))
+
+    goal_index = -1
+    raw_goal = event.get("goal_index")
+    if isinstance(raw_goal, int) and 0 <= raw_goal <= 2:
+        goal_index = raw_goal
+        _set_event(row, f"goal_{raw_goal}", 1.0)
+    revealed_goal_kind = event.get("revealed_goal_kind")
+    if revealed_goal_kind == GoalKind.GOLD.value:
+        _set_event(row, "revealed_gold", 1.0)
+    elif revealed_goal_kind == GoalKind.STONE.value:
+        _set_event(row, "revealed_stone", 1.0)
+    return row, actor_index, target_index, goal_index
+
+
+@dataclass(frozen=True)
+class _PublicProgress:
+    reachable: set[tuple[int, int]]
+    reachable_count: int
+    min_distance_to_goal: int
+
+
+def _initial_public_tiles() -> dict[tuple[int, int], dict[str, object]]:
+    tiles: dict[tuple[int, int], dict[str, object]] = {
+        START_COORD: {
+            "x": START_COORD[0],
+            "y": START_COORD[1],
+            "kind": "start",
+            "card": START_CARD.public_dict(),
+            "rotation": 0,
+            "revealed": True,
+        }
+    }
+    for goal_index, coord in enumerate(GOAL_COORDS):
+        tiles[coord] = {
+            "x": coord[0],
+            "y": coord[1],
+            "kind": "goal",
+            "goal_index": goal_index,
+            "card": None,
+            "rotation": 0,
+            "revealed": False,
+            "goal_kind": None,
+        }
+    return tiles
+
+
+def _apply_public_event(
+    public_tiles: dict[tuple[int, int], dict[str, object]],
+    event: dict[str, object],
+) -> None:
+    action_type = event.get("action_type")
+    coord = _event_coord(event)
+    if action_type == "play_path" and coord is not None:
+        card = event.get("card")
+        if isinstance(card, dict):
+            public_tiles[coord] = {
+                "x": coord[0],
+                "y": coord[1],
+                "kind": "path",
+                "card": card,
+                "rotation": rotation_or_zero(event.get("rotation", 0)),
+                "revealed": True,
+            }
+    elif action_type == "rockfall" and coord is not None:
+        tile = public_tiles.get(coord)
+        if tile is not None and tile.get("kind") == "path":
+            del public_tiles[coord]
+    elif action_type == "reveal_goal":
+        goal_index = event.get("goal_index")
+        if isinstance(goal_index, int) and 0 <= goal_index < len(GOAL_COORDS):
+            goal_coord = GOAL_COORDS[goal_index]
+            card = event.get("card")
+            public_tiles[goal_coord] = {
+                "x": goal_coord[0],
+                "y": goal_coord[1],
+                "kind": "goal",
+                "goal_index": goal_index,
+                "card": card if isinstance(card, dict) else None,
+                "rotation": rotation_or_zero(event.get("rotation", 0)),
+                "revealed": True,
+                "goal_kind": event.get("revealed_goal_kind"),
+            }
+
+
+def _public_progress(public_tiles: dict[tuple[int, int], dict[str, object]]) -> _PublicProgress:
+    reachable: set[tuple[int, int]] = set()
+    frontier = [START_COORD] if START_COORD in public_tiles else []
+    while frontier:
+        coord = frontier.pop(0)
+        if coord in reachable:
+            continue
+        reachable.add(coord)
+        tile = public_tiles.get(coord)
+        if tile is None:
+            continue
+        for direction, (dx, dy) in DIRECTION_DELTAS.items():
+            neighbor_coord = (coord[0] + dx, coord[1] + dy)
+            if neighbor_coord in reachable or neighbor_coord not in public_tiles:
+                continue
+            if _tiles_tunnel_connected(tile, public_tiles.get(neighbor_coord), direction):
+                frontier.append(neighbor_coord)
+    if reachable:
+        min_distance = min(
+            abs(coord[0] - goal_x) + abs(coord[1] - goal_y)
+            for coord in reachable
+            for goal_x, goal_y in GOAL_COORDS
+        )
+    else:
+        min_distance = 36
+    return _PublicProgress(
+        reachable=reachable,
+        reachable_count=len(reachable),
+        min_distance_to_goal=min_distance,
+    )
+
+
+def _event_coord(event: dict[str, object]) -> tuple[int, int] | None:
+    x = event.get("x")
+    y = event.get("y")
+    if isinstance(x, int) and isinstance(y, int):
+        return x, y
+    return None
+
+
+def _signed_normalize(value: int, maximum: int) -> float:
+    if maximum <= 0:
+        return 0.0
+    return max(-1.0, min(1.0, value / float(maximum)))
+
+
+def _set_event(row: list[float], name: str, value: float) -> None:
+    index = HISTORY_EVENT_F.get(name)
+    if index is not None:
+        row[index] = value
 
 
 def _add_global_edges(builder: _GraphBuilder, global_index: int) -> None:

@@ -20,12 +20,21 @@ if str(SRC) not in sys.path:
 import torch
 
 from saboter.action_encoding import encode_actions
+from saboter.actions import (
+    Action,
+    Discard,
+    MapGoal,
+    PlayPath,
+    RepairTool,
+    Rockfall,
+    SabotageTool,
+)
 from saboter.agents.graph_neural_agent import GraphNeuralAgent
 from saboter.agents.neural_agent import NeuralAgent
 from saboter.agents.random_agent import LegalRandomAgent
 from saboter.cards import Role
 from saboter.env import Outcome, SaboteurEnv
-from saboter.graph_encoding import encode_graph
+from saboter.graph_encoding import GRAPH_HISTORY_MAX_EVENTS, HISTORY_EVENT_FEATURE_NAMES, encode_graph
 from saboter.models.graph_policy import GraphPolicy
 from saboter.models.policy import ObservationSizes, SaboteurPolicy
 from saboter.observation import encode_observation
@@ -89,8 +98,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Keep only the latest N checkpoints in --save-dir. Use 0 to keep all.",
     )
     parser.add_argument("--load-checkpoint", type=Path, default=None)
+    parser.add_argument("--allow-partial-load", action="store_true")
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--graph-layers", type=int, default=3)
+    parser.add_argument("--history-encoder", choices=("none", "transformer"), default="none")
+    parser.add_argument("--history-max-events", type=int, default=100)
+    parser.add_argument("--history-layers", type=int, default=2)
+    parser.add_argument("--history-heads", type=int, default=4)
+    parser.add_argument("--belief-injection", choices=("none", "add", "second_pass"), default="none")
+    parser.add_argument("--belief-post-layers", type=int, default=1)
+    parser.add_argument("--belief-detach", type=_parse_bool, default=False)
+    parser.add_argument("--role-conditioned-heads", type=_parse_bool, default=False)
     parser.add_argument("--role-belief-coef", type=float, default=0.05)
     parser.add_argument("--goal-belief-coef", type=float, default=0.05)
     parser.add_argument("--reward-mode", choices=("terminal", "progress", "sabotage", "heuristic"), default="terminal")
@@ -113,12 +131,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     model = (
         _build_policy(args.players, args.seed, device)
         if args.model == "flat"
-        else _build_graph_policy(args.players, args.seed, device, args.hidden_dim, args.graph_layers)
+        else _build_graph_policy(args.players, args.seed, device, args)
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     start_iteration = 0
     if args.load_checkpoint is not None:
-        payload = load_checkpoint(args.load_checkpoint, model=model, optimizer=optimizer, map_location=device)
+        payload = load_checkpoint(
+            args.load_checkpoint,
+            model=model,
+            optimizer=optimizer,
+            map_location=device,
+            allow_partial_load=args.allow_partial_load,
+        )
         start_iteration = int(payload.get("iteration", 0))
 
     agent = (
@@ -193,19 +217,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         eval_metrics: dict[str, float] = {}
         if args.eval_games > 0 and iteration % args.eval_every == 0:
             model.eval()
-            for neural_count in args.eval_neural_counts:
+            if args.training_mode == "random_saboteurs":
                 eval_metrics.update(
-                    evaluate_vs_legal_random(
+                    evaluate_random_saboteurs(
                         model,
                         num_players=args.players,
                         games=args.eval_games,
-                        seed=args.seed + 9_000_000 + iteration * 10_000 + neural_count * 1_000,
+                        seed=args.seed + 9_000_000 + iteration * 10_000,
                         device=device,
                         max_steps=args.max_steps,
                         model_type=args.model,
-                        neural_count=neural_count,
                     )
                 )
+            else:
+                for neural_count in args.eval_neural_counts:
+                    eval_metrics.update(
+                        evaluate_vs_legal_random(
+                            model,
+                            num_players=args.players,
+                            games=args.eval_games,
+                            seed=args.seed + 9_000_000 + iteration * 10_000 + neural_count * 1_000,
+                            device=device,
+                            max_steps=args.max_steps,
+                            model_type=args.model,
+                            neural_count=neural_count,
+                        )
+                    )
             if args.training_mode == "miners_only":
                 eval_metrics.update(
                     evaluate_miners_only(
@@ -304,6 +341,97 @@ def evaluate_vs_legal_random(
         f"{prefix}_miners_win_rate": miner_wins / games,
         f"{prefix}_neural_avg_reward": sum(neural_rewards) / len(neural_rewards),
         f"{prefix}_avg_game_length": sum(lengths) / len(lengths),
+    }
+
+
+def evaluate_random_saboteurs(
+    model: torch.nn.Module,
+    *,
+    num_players: int,
+    games: int,
+    seed: int,
+    device: str | torch.device,
+    max_steps: int,
+    model_type: str = "flat",
+) -> dict[str, float]:
+    if games <= 0:
+        return {}
+    neural_agent = (
+        NeuralAgent(model, device=device, deterministic=True)
+        if model_type == "flat"
+        else GraphNeuralAgent(model, device=device, deterministic=True)
+    )
+    miner_wins = 0
+    lengths: list[int] = []
+    reachable_tiles: list[float] = []
+    min_distances: list[float] = []
+    public_stone_reaches: list[float] = []
+    gold_reaches: list[float] = []
+    miner_action_counts = {
+        "discard": 0,
+        "repair": 0,
+        "sabotage": 0,
+        "rockfall": 0,
+    }
+    miner_decisions = 0
+
+    for game_index in range(games):
+        env = SaboteurEnv(num_players=num_players)
+        env.reset(seed=seed + game_index)
+        random_agents = [
+            LegalRandomAgent(seed=seed * 1000 + game_index * 100 + player_id)
+            for player_id in range(num_players)
+        ]
+        steps = 0
+        while not env.is_terminal():
+            if steps >= max_steps:
+                raise RuntimeError(
+                    f"Random-saboteurs eval seed {seed + game_index} exceeded max_steps={max_steps}"
+                )
+            player_id = env.agent_selection
+            legal_actions = env.legal_actions(player_id)
+            role = env.players[player_id].role
+            if not legal_actions:
+                action = None
+            elif role == Role.MINER:
+                observation = env.observe(player_id)
+                progress = decision_progress_from_observation(observation)
+                reachable_tiles.append(progress.reachable_tiles)
+                min_distances.append(progress.min_distance_to_goal)
+                action, _info = neural_agent.act_with_info(
+                    env,
+                    player_id,
+                    legal_actions=legal_actions,
+                    observation=observation,
+                )
+                miner_decisions += 1
+                action_type = _eval_action_type(action)
+                if action_type in miner_action_counts:
+                    miner_action_counts[action_type] += 1
+            else:
+                action = random_agents[player_id].act(env, player_id)
+            env.step(action)
+            steps += 1
+
+        lengths.append(steps)
+        if env.outcome == Outcome.MINERS_WIN:
+            miner_wins += 1
+        game_progress = game_progress_from_env(env)
+        public_stone_reaches.append(game_progress.public_stone_reaches)
+        gold_reaches.append(game_progress.gold_reaches)
+
+    denominator = max(1, miner_decisions)
+    return {
+        "eval_random_saboteurs_miners_win_rate": miner_wins / games,
+        "eval_random_saboteurs_gold_reaches": _mean(gold_reaches),
+        "eval_random_saboteurs_public_stone_reaches": _mean(public_stone_reaches),
+        "eval_random_saboteurs_avg_reachable_tiles": _mean(reachable_tiles),
+        "eval_random_saboteurs_avg_min_distance_to_goal": _mean(min_distances),
+        "eval_random_saboteurs_discard_rate_miner": miner_action_counts["discard"] / denominator,
+        "eval_random_saboteurs_repair_rate_miner": miner_action_counts["repair"] / denominator,
+        "eval_random_saboteurs_sabotage_rate_miner": miner_action_counts["sabotage"] / denominator,
+        "eval_random_saboteurs_rockfall_rate_miner": miner_action_counts["rockfall"] / denominator,
+        "eval_random_saboteurs_avg_game_length": _mean(lengths),
     }
 
 
@@ -537,13 +665,7 @@ def _collect_graph_worker(
         torch.set_num_interop_threads(1)
     torch.manual_seed(seed + worker_id)
     env = SaboteurEnv(num_players=num_players)
-    model = GraphPolicy(
-        node_feature_size=int(metadata["node_feature_size"]),
-        num_node_types=int(metadata["num_node_types"]),
-        num_edge_types=int(metadata["num_edge_types"]),
-        hidden_dim=int(metadata["hidden_dim"]),
-        graph_layers=int(metadata["graph_layers"]),
-    )
+    model = _graph_policy_from_metadata(metadata)
     model.load_state_dict(model_state_dict)
     agent = GraphNeuralAgent(model, device="cpu", deterministic=False)
     rollouts = collect_graph_rollouts(
@@ -600,6 +722,27 @@ def _collect_worker(
     return rollouts
 
 
+def _graph_policy_from_metadata(metadata: dict[str, object]) -> GraphPolicy:
+    return GraphPolicy(
+        node_feature_size=int(metadata["node_feature_size"]),
+        num_node_types=int(metadata["num_node_types"]),
+        num_edge_types=int(metadata["num_edge_types"]),
+        history_event_feature_size=int(
+            metadata.get("history_event_feature_size", len(HISTORY_EVENT_FEATURE_NAMES))
+        ),
+        hidden_dim=int(metadata["hidden_dim"]),
+        graph_layers=int(metadata["graph_layers"]),
+        history_encoder=str(metadata.get("history_encoder", "none")),
+        history_max_events=int(metadata.get("history_max_events", 100)),
+        history_layers=int(metadata.get("history_layers", 2)),
+        history_heads=int(metadata.get("history_heads", 4)),
+        belief_injection=str(metadata.get("belief_injection", "none")),
+        belief_post_layers=int(metadata.get("belief_post_layers", 1)),
+        belief_detach=_metadata_bool(metadata.get("belief_detach", False)),
+        role_conditioned_heads=_metadata_bool(metadata.get("role_conditioned_heads", False)),
+    )
+
+
 def _build_policy(num_players: int, seed: int, device: torch.device) -> SaboteurPolicy:
     env = SaboteurEnv(num_players=num_players)
     env.reset(seed=seed)
@@ -617,8 +760,7 @@ def _build_graph_policy(
     num_players: int,
     seed: int,
     device: torch.device,
-    hidden_dim: int,
-    graph_layers: int,
+    args: argparse.Namespace,
 ) -> GraphPolicy:
     env = SaboteurEnv(num_players=num_players)
     env.reset(seed=seed)
@@ -627,7 +769,19 @@ def _build_graph_policy(
     if not legal_actions:
         raise RuntimeError("Initial graph training state has no legal actions")
     graph = encode_graph(env, player_id, legal_actions)
-    model = GraphPolicy.from_features(graph, hidden_dim=hidden_dim, graph_layers=graph_layers)
+    model = GraphPolicy.from_features(
+        graph,
+        hidden_dim=args.hidden_dim,
+        graph_layers=args.graph_layers,
+        history_encoder=args.history_encoder,
+        history_max_events=args.history_max_events,
+        history_layers=args.history_layers,
+        history_heads=args.history_heads,
+        belief_injection=args.belief_injection,
+        belief_post_layers=args.belief_post_layers,
+        belief_detach=args.belief_detach,
+        role_conditioned_heads=args.role_conditioned_heads,
+    )
     return model.to(device)
 
 
@@ -809,8 +963,14 @@ def _serialize_graph_tensors(graph: GraphTensors) -> dict[str, object]:
         "global_node_index": graph.global_node_index.tolist(),
         "player_node_indices": graph.player_node_indices.tolist(),
         "goal_node_indices": graph.goal_node_indices.tolist(),
+        "history_features": graph.history_features.tolist(),
+        "history_valid_mask": graph.history_valid_mask.tolist(),
+        "history_actor": graph.history_actor.tolist(),
+        "history_target_player": graph.history_target_player.tolist(),
+        "history_goal": graph.history_goal.tolist(),
         "role_labels": None if graph.role_labels is None else graph.role_labels.tolist(),
         "goal_labels": None if graph.goal_labels is None else graph.goal_labels.tolist(),
+        "role_label_mask": None if graph.role_label_mask is None else graph.role_label_mask.tolist(),
     }
 
 
@@ -825,6 +985,29 @@ def _deserialize_graph_tensors(data: object) -> GraphTensors:
         global_node_index=torch.tensor(item["global_node_index"], dtype=torch.long),
         player_node_indices=torch.tensor(item["player_node_indices"], dtype=torch.long),
         goal_node_indices=torch.tensor(item["goal_node_indices"], dtype=torch.long),
+        history_features=torch.tensor(
+            item.get(
+                "history_features",
+                [[0.0 for _ in HISTORY_EVENT_FEATURE_NAMES] for _ in range(GRAPH_HISTORY_MAX_EVENTS)],
+            ),
+            dtype=torch.float32,
+        ),
+        history_valid_mask=torch.tensor(
+            item.get("history_valid_mask", [False for _ in range(GRAPH_HISTORY_MAX_EVENTS)]),
+            dtype=torch.bool,
+        ),
+        history_actor=torch.tensor(
+            item.get("history_actor", [-1 for _ in range(GRAPH_HISTORY_MAX_EVENTS)]),
+            dtype=torch.long,
+        ),
+        history_target_player=torch.tensor(
+            item.get("history_target_player", [-1 for _ in range(GRAPH_HISTORY_MAX_EVENTS)]),
+            dtype=torch.long,
+        ),
+        history_goal=torch.tensor(
+            item.get("history_goal", [-1 for _ in range(GRAPH_HISTORY_MAX_EVENTS)]),
+            dtype=torch.long,
+        ),
         role_labels=(
             None
             if item["role_labels"] is None
@@ -834,6 +1017,11 @@ def _deserialize_graph_tensors(data: object) -> GraphTensors:
             None
             if item["goal_labels"] is None
             else torch.tensor(item["goal_labels"], dtype=torch.float32)
+        ),
+        role_label_mask=(
+            None
+            if item.get("role_label_mask") is None
+            else torch.tensor(item["role_label_mask"], dtype=torch.bool)
         ),
     )
 
@@ -990,6 +1178,43 @@ def _transition_action_count(transition: Transition | GraphTransition) -> int:
     return int(transition.graph.action_node_indices.shape[0])
 
 
+def _parse_bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected true or false, got {value!r}")
+
+
+def _metadata_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return _parse_bool(value)
+    return bool(value)
+
+
+def _eval_action_type(action: Action | None) -> str:
+    if action is None:
+        return "skip"
+    if isinstance(action, Discard):
+        return "discard"
+    if isinstance(action, PlayPath):
+        return "play_path"
+    if isinstance(action, SabotageTool):
+        return "sabotage"
+    if isinstance(action, RepairTool):
+        return "repair"
+    if isinstance(action, MapGoal):
+        return "map_goal"
+    if isinstance(action, Rockfall):
+        return "rockfall"
+    return type(action).__name__
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     positive_ints = {
         "iterations": args.iterations,
@@ -1004,10 +1229,16 @@ def _validate_args(args: argparse.Namespace) -> None:
         "checkpoint-every": args.checkpoint_every,
         "hidden-dim": args.hidden_dim,
         "graph-layers": args.graph_layers,
+        "history-max-events": args.history_max_events,
+        "history-layers": args.history_layers,
+        "history-heads": args.history_heads,
+        "belief-post-layers": args.belief_post_layers,
     }
     for name, value in positive_ints.items():
         if value <= 0:
             raise ValueError(f"--{name} must be positive")
+    if args.history_encoder == "transformer" and args.hidden_dim % args.history_heads != 0:
+        raise ValueError("--hidden-dim must be divisible by --history-heads")
     nonnegative_ints = {"eval-games": args.eval_games}
     for name, value in nonnegative_ints.items():
         if value < 0:

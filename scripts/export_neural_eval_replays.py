@@ -32,6 +32,7 @@ from saboter.agents.random_agent import LegalRandomAgent
 from saboter.cards import Role
 from saboter.env import SaboteurEnv
 from saboter.evaluation import GameResult
+from saboter.graph_encoding import HISTORY_EVENT_FEATURE_NAMES
 from saboter.models.graph_policy import GraphPolicy
 from saboter.models.policy import ObservationSizes, SaboteurPolicy
 from saboter.training.curriculum import filter_actions_for_training_mode
@@ -194,13 +195,7 @@ def _load_model(path: Path, device: torch.device) -> tuple[torch.nn.Module, str]
     metadata = payload.get("model_metadata", {})
     model_type = str(metadata.get("model_type", payload.get("config", {}).get("model", "flat")))
     if model_type == "graph":
-        model = GraphPolicy(
-            node_feature_size=int(metadata["node_feature_size"]),
-            num_node_types=int(metadata["num_node_types"]),
-            num_edge_types=int(metadata["num_edge_types"]),
-            hidden_dim=int(metadata["hidden_dim"]),
-            graph_layers=int(metadata["graph_layers"]),
-        )
+        model = _graph_policy_from_metadata(metadata)
     else:
         obs_sizes = payload.get("obs_sizes")
         action_size = payload.get("action_size")
@@ -212,6 +207,35 @@ def _load_model(path: Path, device: torch.device) -> tuple[torch.nn.Module, str]
     model.to(device)
     model.eval()
     return model, model_type
+
+
+def _graph_policy_from_metadata(metadata: dict[str, object]) -> GraphPolicy:
+    return GraphPolicy(
+        node_feature_size=int(metadata["node_feature_size"]),
+        num_node_types=int(metadata["num_node_types"]),
+        num_edge_types=int(metadata["num_edge_types"]),
+        history_event_feature_size=int(
+            metadata.get("history_event_feature_size", len(HISTORY_EVENT_FEATURE_NAMES))
+        ),
+        hidden_dim=int(metadata["hidden_dim"]),
+        graph_layers=int(metadata["graph_layers"]),
+        history_encoder=str(metadata.get("history_encoder", "none")),
+        history_max_events=int(metadata.get("history_max_events", 100)),
+        history_layers=int(metadata.get("history_layers", 2)),
+        history_heads=int(metadata.get("history_heads", 4)),
+        belief_injection=str(metadata.get("belief_injection", "none")),
+        belief_post_layers=int(metadata.get("belief_post_layers", 1)),
+        belief_detach=_metadata_bool(metadata.get("belief_detach", False)),
+        role_conditioned_heads=_metadata_bool(metadata.get("role_conditioned_heads", False)),
+    )
+
+
+def _metadata_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"true", "1", "yes", "y", "on"}
+    return bool(value)
 
 
 def _make_agent(

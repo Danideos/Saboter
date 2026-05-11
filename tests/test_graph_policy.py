@@ -17,6 +17,7 @@ from saboter.cards import (
     GOAL_STONE_NE_CARD,
     GOAL_STONE_NW_CARD,
     GoalKind,
+    Tool,
     action_card,
     path_card_by_id,
 )
@@ -24,20 +25,46 @@ from saboter.env import PublicEvent, SaboteurEnv
 from saboter.graph_encoding import (
     EDGE_TYPE_NAMES,
     GRAPH_F,
+    HISTORY_EVENT_F,
+    HISTORY_EVENT_FEATURE_NAMES,
     GRAPH_MAX_HISTORY,
     NODE_TYPE_IDS,
     NODE_TYPE_NAMES,
     encode_graph,
 )
+from saboter.models.history_transformer import HistoryTransformerEncoder
 from saboter.models.graph_policy import GraphPolicy
 from saboter.training.graph_ppo import GraphPPOConfig, graph_ppo_update
 from saboter.training.graph_rollout import collect_graph_game_rollout
+from saboter.training.checkpoint import load_checkpoint, save_checkpoint
 from saboter.training.graph_tensorize import collate_graph_tensors, tensorize_graph
 
 
 def _graph_model_for_env(env: SaboteurEnv) -> GraphPolicy:
     graph = encode_graph(env, env.agent_selection, env.legal_actions())
     return GraphPolicy.from_features(graph, hidden_dim=16, graph_layers=1)
+
+
+def _env_with_public_history(seed: int = 821) -> SaboteurEnv:
+    env = SaboteurEnv(num_players=3)
+    env.reset(seed=seed)
+    env.history = [
+        PublicEvent(actor=0, action_type="discard"),
+        PublicEvent(
+            actor=1,
+            action_type="sabotage",
+            card=action_card(CardType.SABOTAGE, (Tool.CART,)).public_dict(),
+            target_player=2,
+            tool="cart",
+        ),
+        PublicEvent(
+            actor=2,
+            action_type="map_goal",
+            card=action_card(CardType.MAP).public_dict(),
+            goal_index=1,
+        ),
+    ]
+    return env
 
 
 def test_graph_encoder_builds_valid_action_node_graph_without_goal_leakage():
@@ -118,6 +145,57 @@ def test_graph_encoder_keeps_more_than_twenty_history_events():
     assert len(history_rows) == 30
 
 
+def test_structured_history_tensorization_is_public_and_padded():
+    env = _env_with_public_history()
+    graph = encode_graph(env, env.agent_selection, env.legal_actions())
+    tensor = tensorize_graph(graph, history_max_events=8)
+
+    assert tuple(tensor.history_features.shape) == (8, len(HISTORY_EVENT_FEATURE_NAMES))
+    assert tuple(tensor.history_valid_mask.shape) == (8,)
+    assert tensor.history_valid_mask.tolist()[:3] == [True, True, True]
+    assert tensor.history_actor.tolist()[:3] == [0, 1, 2]
+    assert tensor.history_target_player.tolist()[:3] == [-1, 2, -1]
+    assert tensor.history_goal.tolist()[:3] == [-1, -1, 1]
+    assert tensor.history_features[2, HISTORY_EVENT_F["goal_1"]] == 1.0
+    assert tensor.history_features[:, HISTORY_EVENT_F["revealed_gold"]].sum() == 0.0
+    assert tensor.history_features[:, HISTORY_EVENT_F["revealed_stone"]].sum() == 0.0
+    assert tuple(tensor.player_node_indices.shape) == (10,)
+    assert tensor.player_node_indices[: env.num_players].ge(0).all()
+    assert tensor.player_node_indices[env.num_players :].eq(-1).all()
+
+
+def test_history_transformer_forward_shapes():
+    encoder = HistoryTransformerEncoder(
+        event_feature_size=len(HISTORY_EVENT_FEATURE_NAMES),
+        hidden_dim=16,
+        max_events=5,
+        max_players=10,
+        num_goals=3,
+        layers=1,
+        heads=4,
+    )
+    features = torch.randn(2, 5, len(HISTORY_EVENT_FEATURE_NAMES))
+    valid = torch.tensor(
+        [
+            [True, True, False, False, False],
+            [False, False, False, False, False],
+        ]
+    )
+    actor = torch.tensor([[0, 1, -1, -1, -1], [-1, -1, -1, -1, -1]])
+    target = torch.full((2, 5), -1, dtype=torch.long)
+    goal = torch.tensor([[-1, 2, -1, -1, -1], [-1, -1, -1, -1, -1]])
+
+    global_history, player_history, goal_history = encoder(features, valid, actor, target, goal)
+
+    assert tuple(global_history.shape) == (2, 16)
+    assert tuple(player_history.shape) == (2, 10, 16)
+    assert tuple(goal_history.shape) == (2, 3, 16)
+    assert torch.isfinite(global_history).all()
+    assert torch.isfinite(player_history).all()
+    assert torch.isfinite(goal_history).all()
+    assert torch.allclose(global_history[1], torch.zeros(16), atol=1e-6)
+
+
 def test_graph_encoder_exposes_private_mapped_goal_shape_only_to_actor():
     env = SaboteurEnv(num_players=3)
     env.reset(seed=815)
@@ -172,8 +250,139 @@ def test_graph_policy_scores_single_and_batched_graphs():
     assert tuple(output_a.goal_logits.shape) == (3,)
     assert tuple(output_batch.action_logits.shape) == (len(graph_a.actions) + len(graph_b.actions),)
     assert tuple(output_batch.values.shape) == (2,)
+    assert tuple(output_batch.role_logits.shape) == (2, 10)
+    assert tuple(output_batch.goal_logits.shape) == (2, 3)
     assert torch.isfinite(output_batch.action_logits).all()
     assert torch.isfinite(output_batch.values).all()
+    assert batch.role_label_mask is not None
+    assert batch.role_label_mask.tolist() == [
+        [False, True, True, False, False, False, False, False, False, False],
+        [False, True, True, False, False, False, False, False, False, False],
+    ]
+
+
+@pytest.mark.parametrize("belief_injection", ["none", "add", "second_pass"])
+def test_graph_policy_forward_with_transformer_and_belief_modes(belief_injection: str):
+    env_a = _env_with_public_history(822)
+    env_b = _env_with_public_history(823)
+    graph_a = encode_graph(env_a, env_a.agent_selection, env_a.legal_actions())
+    graph_b = encode_graph(env_b, env_b.agent_selection, env_b.legal_actions())
+    tensor_a = tensorize_graph(graph_a, history_max_events=12)
+    tensor_b = tensorize_graph(graph_b, history_max_events=12)
+    batch = collate_graph_tensors([tensor_a, tensor_b], [0, 0], "cpu")
+    model = GraphPolicy.from_features(
+        graph_a,
+        hidden_dim=16,
+        graph_layers=1,
+        history_encoder="transformer",
+        history_max_events=12,
+        history_layers=1,
+        history_heads=4,
+        belief_injection=belief_injection,
+        belief_post_layers=1,
+        role_conditioned_heads=True,
+    )
+
+    output = model.score_graph_batches(batch)
+
+    assert tuple(output.action_logits.shape) == (len(graph_a.actions) + len(graph_b.actions),)
+    assert tuple(output.values.shape) == (2,)
+    assert tuple(output.role_logits.shape) == (2, 10)
+    assert tuple(output.goal_logits.shape) == (2, 3)
+    assert torch.isfinite(output.action_logits).all()
+    assert torch.isfinite(output.values).all()
+    assert torch.isfinite(output.role_logits).all()
+    assert torch.isfinite(output.goal_logits).all()
+
+
+def test_history_transformer_receives_gradients_from_graph_policy():
+    env = _env_with_public_history(824)
+    graph = encode_graph(env, env.agent_selection, env.legal_actions())
+    tensor = tensorize_graph(graph, history_max_events=12)
+    model = GraphPolicy.from_features(
+        graph,
+        hidden_dim=16,
+        graph_layers=1,
+        history_encoder="transformer",
+        history_max_events=12,
+        history_layers=1,
+        history_heads=4,
+        belief_injection="second_pass",
+    )
+
+    output = model.score_graph(tensor)
+    loss = output.action_logits.sum() + output.values.sum() + output.role_logits.sum() + output.goal_logits.sum()
+    loss.backward()
+
+    assert model.history_encoder is not None
+    assert any(param.grad is not None for param in model.history_encoder.parameters())
+
+
+def test_belief_detach_controls_action_gradient_into_belief_head():
+    env = _env_with_public_history(825)
+    graph = encode_graph(env, env.agent_selection, env.legal_actions())
+
+    def belief_head_has_action_grad(detach: bool) -> bool:
+        model = GraphPolicy.from_features(
+            graph,
+            hidden_dim=16,
+            graph_layers=1,
+            belief_injection="add",
+            belief_detach=detach,
+        )
+        tensor = tensorize_graph(graph, history_max_events=model.history_max_events)
+        output = model.score_graph(tensor)
+        output.action_logits.sum().backward()
+        return any(
+            param.grad is not None and bool(torch.any(param.grad != 0.0))
+            for param in model.role_belief_head.parameters()
+        )
+
+    assert belief_head_has_action_grad(False)
+    assert not belief_head_has_action_grad(True)
+
+
+def test_transformer_checkpoint_save_load_preserves_config(tmp_path):
+    env = _env_with_public_history(826)
+    graph = encode_graph(env, env.agent_selection, env.legal_actions())
+    model = GraphPolicy.from_features(
+        graph,
+        hidden_dim=16,
+        graph_layers=1,
+        history_encoder="transformer",
+        history_max_events=12,
+        history_layers=1,
+        history_heads=4,
+        belief_injection="second_pass",
+        belief_post_layers=1,
+        role_conditioned_heads=True,
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    path = save_checkpoint(
+        tmp_path / "graph_transformer.pt",
+        model=model,
+        optimizer=optimizer,
+        iteration=3,
+        config={"model": "graph"},
+    )
+    loaded = GraphPolicy.from_features(
+        graph,
+        hidden_dim=16,
+        graph_layers=1,
+        history_encoder="transformer",
+        history_max_events=12,
+        history_layers=1,
+        history_heads=4,
+        belief_injection="second_pass",
+        belief_post_layers=1,
+        role_conditioned_heads=True,
+    )
+    loaded_optimizer = torch.optim.Adam(loaded.parameters(), lr=1e-3)
+
+    payload = load_checkpoint(path, model=loaded, optimizer=loaded_optimizer)
+
+    assert payload["model_metadata"]["history_encoder"] == "transformer"
+    assert loaded.checkpoint_metadata()["belief_injection"] == "second_pass"
 
 
 def test_graph_agent_rollout_and_ppo_update_are_finite():
@@ -210,7 +419,12 @@ def test_graph_agent_rollout_and_ppo_update_are_finite():
     assert metrics.transitions == min(8, len(game.transitions))
     assert metrics.updates > 0
     assert metrics.role_belief_loss >= 0.0
+    assert metrics.role_belief_loss_others >= 0.0
+    assert 0.0 <= metrics.role_belief_accuracy_others <= 1.0
+    assert metrics.role_belief_brier_others >= 0.0
     assert metrics.goal_belief_loss >= 0.0
+    assert 0.0 <= metrics.goal_belief_acc <= 1.0
+    assert 0.0 <= metrics.goal_gold_prob_on_true_goal <= 1.0
 
 
 def test_graph_rollout_supports_heuristic_reward_mode():

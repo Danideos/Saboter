@@ -36,7 +36,12 @@ class GraphPPOMetrics:
     grad_norm: float
     loss: float
     role_belief_loss: float
+    role_belief_loss_others: float
+    role_belief_accuracy_others: float
+    role_belief_brier_others: float
     goal_belief_loss: float
+    goal_belief_acc: float
+    goal_gold_prob_on_true_goal: float
     transitions: int
     updates: int
 
@@ -84,7 +89,12 @@ def graph_ppo_update(
         "grad_norm": 0.0,
         "loss": 0.0,
         "role_belief_loss": 0.0,
+        "role_belief_loss_others": 0.0,
+        "role_belief_accuracy_others": 0.0,
+        "role_belief_brier_others": 0.0,
         "goal_belief_loss": 0.0,
+        "goal_belief_acc": 0.0,
+        "goal_gold_prob_on_true_goal": 0.0,
     }
     sample_count = 0
     update_count = 0
@@ -116,8 +126,24 @@ def graph_ppo_update(
             policy_loss = -torch.minimum(unclipped, clipped).mean()
             value_loss = F.mse_loss(output.values, batch_returns)
             entropy = entropies.mean()
-            role_loss = _bce_or_zero(output.role_logits, batch.role_labels)
-            goal_loss = _bce_or_zero(output.goal_logits, batch.goal_labels)
+            role_loss = _masked_bce_or_zero(
+                output.role_logits,
+                batch.role_labels,
+                batch.role_label_mask,
+            )
+            role_accuracy = _masked_binary_accuracy_or_zero(
+                output.role_logits,
+                batch.role_labels,
+                batch.role_label_mask,
+            )
+            role_brier = _masked_brier_or_zero(
+                output.role_logits,
+                batch.role_labels,
+                batch.role_label_mask,
+            )
+            goal_loss = _goal_ce_or_zero(output.goal_logits, batch.goal_labels)
+            goal_accuracy = _goal_accuracy_or_zero(output.goal_logits, batch.goal_labels)
+            goal_true_prob = _goal_true_prob_or_zero(output.goal_logits, batch.goal_labels)
             loss = (
                 policy_loss
                 + config.value_coef * value_loss
@@ -146,7 +172,12 @@ def graph_ppo_update(
             metric_sums["grad_norm"] += float(grad_norm.detach().cpu()) * batch_size
             metric_sums["loss"] += float(loss.detach().cpu()) * batch_size
             metric_sums["role_belief_loss"] += float(role_loss.detach().cpu()) * batch_size
+            metric_sums["role_belief_loss_others"] += float(role_loss.detach().cpu()) * batch_size
+            metric_sums["role_belief_accuracy_others"] += float(role_accuracy.detach().cpu()) * batch_size
+            metric_sums["role_belief_brier_others"] += float(role_brier.detach().cpu()) * batch_size
             metric_sums["goal_belief_loss"] += float(goal_loss.detach().cpu()) * batch_size
+            metric_sums["goal_belief_acc"] += float(goal_accuracy.detach().cpu()) * batch_size
+            metric_sums["goal_gold_prob_on_true_goal"] += float(goal_true_prob.detach().cpu()) * batch_size
             sample_count += batch_size
             update_count += 1
 
@@ -159,7 +190,12 @@ def graph_ppo_update(
         grad_norm=metric_sums["grad_norm"] / sample_count,
         loss=metric_sums["loss"] / sample_count,
         role_belief_loss=metric_sums["role_belief_loss"] / sample_count,
+        role_belief_loss_others=metric_sums["role_belief_loss_others"] / sample_count,
+        role_belief_accuracy_others=metric_sums["role_belief_accuracy_others"] / sample_count,
+        role_belief_brier_others=metric_sums["role_belief_brier_others"] / sample_count,
         goal_belief_loss=metric_sums["goal_belief_loss"] / sample_count,
+        goal_belief_acc=metric_sums["goal_belief_acc"] / sample_count,
+        goal_gold_prob_on_true_goal=metric_sums["goal_gold_prob_on_true_goal"] / sample_count,
         transitions=transition_count,
         updates=update_count,
     )
@@ -199,3 +235,91 @@ def _bce_or_zero(logits: torch.Tensor, labels: torch.Tensor | None) -> torch.Ten
     if labels is None or labels.numel() == 0:
         return logits.sum() * 0.0
     return F.binary_cross_entropy_with_logits(logits, labels)
+
+
+def _goal_ce_or_zero(logits: torch.Tensor, labels: torch.Tensor | None) -> torch.Tensor:
+    if labels is None or labels.numel() == 0:
+        return logits.sum() * 0.0
+    target = _goal_targets(labels, logits)
+    if target.numel() == 0:
+        return logits.sum() * 0.0
+    return F.cross_entropy(logits, target)
+
+
+def _goal_accuracy_or_zero(logits: torch.Tensor, labels: torch.Tensor | None) -> torch.Tensor:
+    if labels is None or labels.numel() == 0:
+        return logits.sum() * 0.0
+    target = _goal_targets(labels, logits)
+    if target.numel() == 0:
+        return logits.sum() * 0.0
+    return (logits.argmax(dim=-1) == target).float().mean()
+
+
+def _goal_true_prob_or_zero(logits: torch.Tensor, labels: torch.Tensor | None) -> torch.Tensor:
+    if labels is None or labels.numel() == 0:
+        return logits.sum() * 0.0
+    target = _goal_targets(labels, logits)
+    if target.numel() == 0:
+        return logits.sum() * 0.0
+    return torch.softmax(logits, dim=-1).gather(1, target.unsqueeze(1)).mean()
+
+
+def _goal_targets(labels: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    resolved_labels = labels.to(device=logits.device)
+    if resolved_labels.ndim == 1:
+        resolved_labels = resolved_labels.reshape(1, -1)
+    return resolved_labels.argmax(dim=-1).to(dtype=torch.long)
+
+
+def _masked_bce_or_zero(
+    logits: torch.Tensor,
+    labels: torch.Tensor | None,
+    mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if labels is None or labels.numel() == 0:
+        return logits.sum() * 0.0
+    masked_logits, masked_labels = _masked_logits_and_labels(logits, labels, mask)
+    if masked_labels.numel() == 0:
+        return logits.sum() * 0.0
+    return F.binary_cross_entropy_with_logits(masked_logits, masked_labels)
+
+
+def _masked_binary_accuracy_or_zero(
+    logits: torch.Tensor,
+    labels: torch.Tensor | None,
+    mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if labels is None or labels.numel() == 0:
+        return logits.sum() * 0.0
+    masked_logits, masked_labels = _masked_logits_and_labels(logits, labels, mask)
+    if masked_labels.numel() == 0:
+        return logits.sum() * 0.0
+    predictions = torch.sigmoid(masked_logits) >= 0.5
+    targets = masked_labels >= 0.5
+    return (predictions == targets).float().mean()
+
+
+def _masked_brier_or_zero(
+    logits: torch.Tensor,
+    labels: torch.Tensor | None,
+    mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if labels is None or labels.numel() == 0:
+        return logits.sum() * 0.0
+    masked_logits, masked_labels = _masked_logits_and_labels(logits, labels, mask)
+    if masked_labels.numel() == 0:
+        return logits.sum() * 0.0
+    probabilities = torch.sigmoid(masked_logits)
+    return torch.mean((probabilities - masked_labels) ** 2)
+
+
+def _masked_logits_and_labels(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    resolved_labels = labels.to(device=logits.device)
+    if mask is None:
+        return logits, resolved_labels
+    resolved_mask = mask.to(device=logits.device, dtype=torch.bool)
+    return logits[resolved_mask], resolved_labels[resolved_mask]

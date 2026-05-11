@@ -65,7 +65,11 @@ class GraphNeuralAgent:
             resolved_observation,
             include_labels=True,
         )
-        graph_tensors = tensorize_graph(graph_features, self.device)
+        graph_tensors = tensorize_graph(
+            graph_features,
+            self.device,
+            history_max_events=int(getattr(self.model, "history_max_events", 100)),
+        )
         _check_finite("graph node features", graph_tensors.x)
         with torch.no_grad():
             output = self.model.score_graph(graph_tensors)

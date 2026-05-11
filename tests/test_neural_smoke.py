@@ -9,6 +9,7 @@ from scripts.train_ppo import (
     _split_games,
     _prune_checkpoints,
     evaluate_miners_only,
+    evaluate_random_saboteurs,
     evaluate_vs_legal_random,
     main as train_ppo_main,
 )
@@ -585,6 +586,35 @@ def test_evaluate_vs_random_supports_multiple_neural_seats():
 
     assert "eval_2_ours_vs_random_miners_win_rate" in metrics
     assert "eval_2_ours_vs_random_neural_avg_reward" in metrics
+
+
+def test_evaluate_random_saboteurs_uses_neural_miners_and_reports_miner_actions():
+    env = SaboteurEnv(num_players=5)
+    env.reset(seed=723)
+    model = _policy_for_env(env)
+
+    metrics = evaluate_random_saboteurs(
+        model,
+        num_players=5,
+        games=1,
+        seed=723,
+        device="cpu",
+        max_steps=200,
+    )
+
+    expected_keys = {
+        "eval_random_saboteurs_miners_win_rate",
+        "eval_random_saboteurs_gold_reaches",
+        "eval_random_saboteurs_public_stone_reaches",
+        "eval_random_saboteurs_avg_reachable_tiles",
+        "eval_random_saboteurs_avg_min_distance_to_goal",
+        "eval_random_saboteurs_discard_rate_miner",
+        "eval_random_saboteurs_repair_rate_miner",
+        "eval_random_saboteurs_sabotage_rate_miner",
+        "eval_random_saboteurs_rockfall_rate_miner",
+    }
+    assert expected_keys <= metrics.keys()
+    assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
 
 
 def test_export_vs_random_replay_uses_learned_miners_and_random_saboteurs():
